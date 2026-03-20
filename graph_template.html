@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script>
+        {{ vis_js_content | safe }}
+    </script>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background: linear-gradient(180deg, #FFF8FA 0%, #FFF0F5 50%, #FFE8EF 100%);
+            overflow: hidden;
+            font-family: "Microsoft YaHei", sans-serif;
+        }
+        #network-container {
+            width: 100%; height: calc(100vh - 80px); position: relative;
+        }
+        .header {
+            width: 100%; height: 80px;
+            display: flex; align-items: center; justify-content: center;
+            text-align: center; color: #FFFFFF;
+            font-size: 30px; font-weight: bold;
+            background: linear-gradient(135deg, #FFB7C5 0%, #E8A0BF 50%, #C85A7C 100%);
+            z-index: 10; position: relative;
+            text-shadow: 2px 2px 0 rgba(0,0,0,0.15);
+            letter-spacing: 3px;
+            box-shadow: 0 3px 0 #FFD6E0;
+        }
+        .header::before { content: '🌸'; position: absolute; left: 20px; font-size: 24px; opacity: 0.6; }
+        .header::after { content: '🌸'; position: absolute; right: 20px; font-size: 24px; opacity: 0.6; }
+    </style>
+</head>
+<body>
+    <div class="header">群 {{ group_name }} 今日老婆羁绊图谱</div>
+    <div id="network-container"></div>
+
+    <script>
+        const hourlyTag = new Date().toISOString().slice(0, 13);
+        const raw_data = {{ records | tojson }};
+        const user_map = {{ user_map | tojson }} || {};
+        const nodes = [];
+        const edges = [];
+        const userSet = new Set();
+
+        raw_data.forEach(r => {
+            const userName = user_map[r.user_id] || "用户" + r.user_id;
+            const wifeName = user_map[r.wife_id] || r.wife_name;
+
+            [{ id: r.user_id, name: userName }, { id: r.wife_id, name: wifeName }].forEach(u => {
+                if (!userSet.has(u.id)) {
+                    userSet.add(u.id);
+                    nodes.push({
+                        id: u.id, label: u.name,
+                        shape: 'circularImage',
+                        image: `https://q4.qlogo.cn/headimg_dl?dst_uin=${u.id}&spec=640&t=${hourlyTag}`,
+                        borderWidth: 6, size: 110,
+                        color: { border: '#C85A7C', background: '#FFF0F5' },
+                        font: {
+                            color: '#4A3F4B', size: 50, vadjust: 40,
+                            strokeWidth: 6, strokeColor: '#FFFFFF',
+                            bold: { color: '#4A3F4B', size: 44, vadjust: 40 }
+                        }
+                    });
+                }
+            });
+
+            edges.push({
+                from: r.user_id, to: r.wife_id,
+                label: r.forced ? "强娶" : "抽中",
+                arrows: { to: { enabled: true, scaleFactor: 3, type: 'arrow' } },
+                color: { color: r.forced ? '#C85A7C' : '#FFB7C5', width: 4 },
+                font: { align: 'middle', color: '#4A3F4B', size: 48, background: '#FFF8FA' },
+                length: 700
+            });
+        });
+
+        const container = document.getElementById('network-container');
+        const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+        const options = {
+            nodes: { shape: 'circularImage', font: { face: 'Microsoft YaHei' } },
+            edges: { smooth: { type: 'curvedCW', roundness: 0.2 } },
+            physics: {
+                enabled: true,
+                barnesHut: {
+                    gravitationalConstant: -110000, centralGravity: 0.001,
+                    springLength: 800, springConstant: 0.04,
+                    damping: 0.09, avoidOverlap: 1
+                },
+                stabilization: {
+                    enabled: true, iterations: {{ iterations }},
+                    updateInterval: 25, onlyDynamicEdges: false, fit: true
+                }
+            }
+        };
+        const network = new vis.Network(container, data, options);
+        network.once("stabilizationIterationsDone", function () { network.fit(); });
+    </script>
+</body>
+</html>

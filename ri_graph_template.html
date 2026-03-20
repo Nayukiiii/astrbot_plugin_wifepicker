@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script>
+        {{ vis_js_content | safe }}
+    </script>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background: linear-gradient(180deg, #FFF8FA 0%, #F5E6F0 100%);
+            overflow: hidden;
+            font-family: "Microsoft YaHei", sans-serif;
+        }
+        #network-container {
+            width: 100%; height: calc(100vh - 130px); position: relative;
+        }
+        .header {
+            width: 100%; height: 80px;
+            display: flex; align-items: center; justify-content: center;
+            color: #FFFFFF; font-size: 28px; font-weight: bold;
+            background: linear-gradient(135deg, #FFB7C5 0%, #B47CC5 100%);
+            z-index: 10; position: relative;
+            text-shadow: 2px 2px 0 rgba(0,0,0,0.15);
+            letter-spacing: 3px;
+            box-shadow: 0 3px 0 #E8D5E0;
+        }
+        .header::before { content: '🌸'; position: absolute; left: 20px; font-size: 22px; opacity: 0.5; }
+        .header::after { content: '🌸'; position: absolute; right: 20px; font-size: 22px; opacity: 0.5; }
+        .legend {
+            display: flex; gap: 24px; align-items: center; justify-content: center;
+            padding: 8px 0;
+            background: #FFF5F8;
+            border-bottom: 2px solid #FFD6E0;
+        }
+        .legend span {
+            font-size: 20px; font-family: 'Microsoft YaHei', sans-serif;
+        }
+        .legend .at { color: #C85A7C; }
+        .legend .invite { color: #D4A5E0; }
+        .legend .random { color: #FFB7C5; }
+    </style>
+</head>
+<body>
+    <div class="header">💦 群 {{ group_name }} 今日日群友图谱 💦</div>
+    <div class="legend">
+        <span class="at">━━▶ @指定</span>
+        <span class="invite">╌╌▶ 跟日</span>
+        <span class="random">──▶ 随机</span>
+    </div>
+    <div id="network-container"></div>
+
+    <script>
+        const hourlyTag = new Date().toISOString().slice(0, 13);
+        const raw_data = {{ records | tojson }};
+        const user_map = {{ user_map | tojson }} || {};
+        const nodes = [];
+        const edges = [];
+        const userSet = new Set();
+
+        raw_data.forEach(r => {
+            const uid = r.user_id;
+            const tid = r.target_id;
+            const uname = user_map[uid] || r.user_name || ("用户" + uid);
+            const tname = user_map[tid] || r.target_name || ("用户" + tid);
+
+            [{id: uid, name: uname}, {id: tid, name: tname}].forEach(u => {
+                if (!userSet.has(u.id)) {
+                    userSet.add(u.id);
+                    nodes.push({
+                        id: u.id, label: u.name,
+                        shape: 'circularImage',
+                        image: `https://q4.qlogo.cn/headimg_dl?dst_uin=${u.id}&spec=640&t=${hourlyTag}`,
+                        borderWidth: 5, size: 90,
+                        color: { border: '#B47CC5', background: '#FFF0F5' },
+                        font: { color: '#4A3F4B', size: 42, vadjust: 38,
+                                strokeWidth: 5, strokeColor: '#FFFFFF',
+                                bold: { color: '#4A3F4B', size: 42, vadjust: 38 } }
+                    });
+                }
+            });
+
+            const type = r.type || "random";
+            let edgeColor, edgeDashes, edgeWidth, edgeLabel;
+            if (type === "at") {
+                edgeColor = "#C85A7C"; edgeDashes = false; edgeWidth = 4; edgeLabel = "日了";
+            } else if (type === "invite") {
+                edgeColor = "#D4A5E0"; edgeDashes = [8, 6]; edgeWidth = 3; edgeLabel = "跟日";
+            } else {
+                edgeColor = "#FFB7C5"; edgeDashes = false; edgeWidth = 2; edgeLabel = "随机日";
+            }
+
+            edges.push({
+                from: uid, to: tid, label: edgeLabel,
+                arrows: { to: { enabled: true, scaleFactor: 2.5, type: 'arrow' } },
+                color: { color: edgeColor, opacity: 0.9 },
+                width: edgeWidth, dashes: edgeDashes,
+                font: { align: 'middle', color: edgeColor, size: 32, background: '#FFF8FA' },
+                length: 650
+            });
+        });
+
+        const container = document.getElementById('network-container');
+        const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+        const options = {
+            nodes: { shape: 'circularImage', font: { face: 'Microsoft YaHei' } },
+            edges: { smooth: { type: 'curvedCW', roundness: 0.25 } },
+            physics: {
+                enabled: true,
+                barnesHut: {
+                    gravitationalConstant: -100000, centralGravity: 0.02,
+                    springLength: 650, springConstant: 0.05, damping: 0.1, avoidOverlap: 1
+                },
+                stabilization: { enabled: true, iterations: {{ iterations }},
+                    updateInterval: 25, onlyDynamicEdges: false, fit: true }
+            }
+        };
+        const network = new vis.Network(container, data, options);
+        network.once("stabilizationIterationsDone", function () { network.fit(); });
+    </script>
+</body>
+</html>

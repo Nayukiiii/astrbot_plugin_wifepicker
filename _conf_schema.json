@@ -1,0 +1,179 @@
+{
+    "daily_limit": {
+        "type": "int",
+        "description": "每日抽取上限",
+        "hint": "每位用户每天可以抽取老婆的次数上限。",
+        "default": 1
+    },
+    "force_marry_cd": {
+        "type": "int",
+        "description": "强娶冷却天数",
+        "hint": "一个人每隔多少天可以强娶一次别人。",
+        "default": 3
+    },
+    "max_records": {
+        "type": "int",
+        "description": "活跃群友记录上限",
+        "hint": "跨群累计活跃用户总记录条数，作为抽老婆的候选池。达到此数值后将自动清理最沉默的群友。如果你加的群很多，而且都比较活跃，请调高此数值。",
+        "default": 500
+    },
+    "excluded_users": {
+        "type": "list",
+        "description": "排除用户列表",
+        "hint": "在此列表中的QQ号将不会被抽中。",
+        "default": []
+    },
+    "force_marry_excluded_users": {
+        "type": "list",
+        "description": "强娶排除用户列表",
+        "hint": "在此列表中的QQ号不会被“强娶”指令选中。",
+        "default": []
+    },
+    "whitelist_groups": {
+        "type": "list",
+        "description": "群聊白名单",
+        "hint": "若填写，则插件仅在这些群生效。",
+        "default": []
+    },
+    "blacklist_groups": {
+        "type": "list",
+        "description": "群聊黑名单",
+        "hint": "在此列表中的群聊将禁用此插件功能。",
+        "default": []
+    },
+    "iterations": {
+        "type": "int",
+        "description": "关系图生成迭代次数",
+        "hint": "控制关系图生成的精细度。如果你感觉生成的头像跑到图片外，请调小此数值。人数少的话可以调小一点，100也可以（推荐140最佳）",
+        "default": 140,
+        "slider": {
+            "min": 50,
+            "max": 180,
+            "step": 10
+        }
+    },
+    "keyword_trigger_enabled": {
+        "type": "bool",
+        "description": "关键词触发",
+        "hint": "开启后，直接发送“抽老婆/强娶/关系图/抽老婆帮助”等关键词即可触发对应指令，无需指令前缀（如 /）。默认关闭以避免误触。",
+        "default": false
+    },
+    "keyword_trigger_mode": {
+        "type": "string",
+        "description": "关键词匹配模式",
+        "hint": "exact：消息去两端空白后必须完全相等；starts_with：以关键词开头即可；contains：包含关键词即可。建议保持 exact 以避免误触。",
+        "options": [
+            "exact",
+            "starts_with",
+            "contains"
+        ],
+        "default": "exact"
+    },
+    "auto_set_other_half": {
+        "type": "bool",
+        "description": "自动设置对方老婆",
+        "hint": "开启后，抽到老婆时若对方今天还没有老婆记录，将自动给对方设置“你”为老婆（对方仍可自行抽取/强娶，视每日上限而定）。默认关闭。",
+        "default": false
+    },
+    "auto_withdraw_enabled": {
+        "type": "bool",
+        "description": "定时自动撤回",
+        "hint": "开启后，将在发送老婆结果后延迟撤回消息以防刷屏。当前仅在 aiocqhttp/OneBot 平台可用（通过 delete_msg 实现）。默认关闭。",
+        "default": false
+    },
+    "auto_withdraw_delay_seconds": {
+        "type": "int",
+        "description": "自动撤回延迟(秒)",
+        "hint": "自动撤回延迟时间，单位秒。仅在开启“定时自动撤回”时生效。",
+        "default": 5,
+        "slider": {
+            "min": 1,
+            "max": 60,
+            "step": 1
+        }
+    },
+    "ri_probability": {
+        "type": "float",
+        "description": "日群友随机模式触发概率（%）",
+        "hint": "发送\"日群友\"（不带@）的触发概率，取值 0~100。失败不消耗次数。",
+        "default": 30,
+        "slider": {
+            "min": 0,
+            "max": 100,
+            "step": 5
+        }
+    },
+    "ri_at_probability": {
+        "type": "float",
+        "description": "日群友@指定模式触发概率（%）",
+        "hint": "发送\"日群友 @某人\"的触发概率，取值 0~100。概率成功后才消耗@指定额度。",
+        "default": 30,
+        "slider": {
+            "min": 0,
+            "max": 100,
+            "step": 5
+        }
+    },
+    "ri_target_max": {
+        "type": "int",
+        "description": "每人每天最多被日次数（@指定模式）",
+        "default": 3,
+        "hint": "每个群友每天最多被@日群友的次数上限"
+    },
+    "ri_invite_max": {
+        "type": "int",
+        "description": "每人每天最多跟日次数（/我也日）",
+        "default": 3,
+        "hint": "每个群友每天可以用/我也日跟进的次数上限"
+    },
+    "force_marry_cd_mode": {
+        "type": "string",
+        "description": "强娶冷却模式",
+        "hint": "daily：每天0点刷新，每人每天只能强娶一次；days：原来的天数CD模式（根据force_marry_cd配置天数）。",
+        "options": [
+            "daily",
+            "days"
+        ],
+        "default": "days"
+    },
+    "force_marry_lock_count": {
+        "type": "int",
+        "description": "强娶上锁次数",
+        "hint": "同一天被强娶达到此次数后，该用户将被上锁无法再被强娶。",
+        "default": 2
+    },
+    "force_marry_daily_limit": {
+        "type": "int",
+        "description": "强娶每日次数(daily模式)",
+        "hint": "daily模式下每人每天可以强娶的次数上限。",
+        "default": 2
+    },
+    "force_marry_wife_limit": {
+        "type": "int",
+        "description": "强娶今日老婆上限",
+        "hint": "每人每天通过强娶最多可以拥有几个不同的老婆。超过上限后无法再强娶新目标。默认1即保持原来行为。",
+        "default": 1,
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        }
+    },
+    "affinity_bypass_lock_threshold": {
+        "type": "int",
+        "description": "好感度无视上锁阈值",
+        "hint": "好感度达到此值时，可以无视上锁保护直接强娶对方。",
+        "default": 50,
+        "slider": {
+            "min": 10,
+            "max": 100,
+            "step": 5
+        }
+    },
+    "force_marry_unlock_ri_count": {
+        "type": "int",
+        "description": "被日解锁次数",
+        "hint": "上锁的用户被日群友@指定日达到此次数后，自动解锁可再被强娶。",
+        "default": 3
+    }
+}

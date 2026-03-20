@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        :root {
+            --bg-page: #FFF5F7; --bg-container: #FFFFFF;
+            --accent: #C85A7C; --accent-light: #FFB7C5; --accent-soft: #FFD6E0;
+            --purple: #B47CC5; --purple-light: #D4A5E0;
+            --text-primary: #4A3F4B; --text-light: #FFFFFF;
+            --rank-1: #FFD700; --rank-2: #C0C0C0; --rank-3: #CD7F32;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-page); margin: 0; padding: 0;
+            width: 400px; display: inline-block;
+        }
+        .container { background: var(--bg-container); width: 400px; overflow: hidden; }
+        .header {
+            background: linear-gradient(135deg, var(--accent-light) 0%, var(--purple-light) 100%);
+            color: var(--text-light); padding: 20px;
+            text-align: center; font-size: 20px; font-weight: bold;
+            letter-spacing: 2px; text-shadow: 1px 1px 0 rgba(0,0,0,0.15);
+            position: relative;
+        }
+        .header::before, .header::after {
+            content: '🌸'; position: absolute; font-size: 14px; opacity: 0.4;
+        }
+        .header::before { top: 6px; left: 10px; }
+        .header::after { bottom: 6px; right: 10px; }
+        .item {
+            display: flex; align-items: center;
+            padding: 0 15px; height: 62px;
+            border-bottom: 2px solid #FFF0F5;
+        }
+        .item:nth-child(odd) { background: #FFFAFC; }
+        .rank {
+            font-weight: bold; width: 30px; color: var(--purple); font-size: 16px; text-align: center;
+        }
+        .rank.top1 { color: var(--rank-1); font-size: 20px; text-shadow: 1px 1px 0 #DAA520; }
+        .rank.top2 { color: var(--rank-2); font-size: 18px; }
+        .rank.top3 { color: var(--rank-3); font-size: 18px; }
+        .avatar {
+            width: 42px; height: 42px;
+            border: 2px solid var(--purple-light);
+            box-shadow: 2px 2px 0px var(--accent-soft);
+            margin: 0 10px;
+        }
+        .name {
+            flex: 1; font-size: 14px; color: var(--text-primary);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .count-tag {
+            background: linear-gradient(135deg, var(--purple-light), var(--purple));
+            color: var(--text-light);
+            padding: 3px 10px; font-size: 12px; white-space: nowrap;
+            box-shadow: 2px 2px 0 var(--accent-soft);
+        }
+        .footer {
+            padding: 12px; text-align: center;
+            font-size: 11px; color: var(--purple); opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">{{ title }}</div>
+        {% for user in ranking %}
+        <div class="item">
+            <div class="rank {% if user.rank == 1 %}top1{% elif user.rank == 2 %}top2{% elif user.rank == 3 %}top3{% endif %}">#{{ user.rank }}</div>
+            <img class="avatar" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ user.uid }}&spec=100&t={{ range(1, 99999) | random }}">
+            <div class="name">{{ user.name }}</div>
+            <div class="count-tag">日了 {{ user.count }} 次</div>
+        </div>
+        {% endfor %}
+        <div class="footer">🌸 数据统计范围：最近30天 🌸</div>
+    </div>
+</body>
+</html>

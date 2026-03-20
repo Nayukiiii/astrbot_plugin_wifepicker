@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #FFF5F7; margin: 0; padding: 0;
+            width: 480px; display: inline-block;
+        }
+        .container { background: #FFFFFF; width: 480px; overflow: hidden; }
+        .header {
+            background: linear-gradient(135deg, #FFB7C5 0%, #E8A0BF 100%);
+            color: white; padding: 20px;
+            text-align: center; font-size: 20px; font-weight: bold;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            letter-spacing: 2px;
+        }
+        .item {
+            display: flex; align-items: center;
+            padding: 10px 15px; height: 80px;
+            border-bottom: 2px solid #FFF0F5;
+        }
+        .rank {
+            font-weight: bold; width: 32px; font-size: 16px;
+            color: #C85A7C; text-align: center; flex-shrink: 0;
+        }
+        .rank.top1 { color: #FFD700; font-size: 18px; }
+        .rank.top2 { color: #C0C0C0; font-size: 17px; }
+        .rank.top3 { color: #CD7F32; font-size: 17px; }
+        .couple-avatars {
+            display: flex; align-items: center; gap: 4px;
+            margin: 0 10px; flex-shrink: 0;
+        }
+        .av {
+            width: 40px; height: 40px;
+            border: 2px solid #FFB7C5;
+            box-shadow: 2px 2px 0px #FFD6E0;
+        }
+        .heart-icon { font-size: 14px; color: #C85A7C; }
+        .info { flex: 1; min-width: 0; }
+        .cp-names {
+            font-size: 13px; color: #4A3F4B;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .bar-wrap {
+            margin-top: 4px; height: 12px;
+            background: #F5E6EA; position: relative;
+            box-shadow: inset 1px 1px 0 #E8D5E0;
+        }
+        .bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #FFB7C5, #C85A7C);
+        }
+        .bar-fill.full {
+            background: linear-gradient(90deg, #FF8FAB, #C85A7C, #A0365A);
+        }
+        .value-tag {
+            font-size: 12px; color: #C85A7C; font-weight: bold;
+            margin-left: 8px; white-space: nowrap; flex-shrink: 0;
+        }
+        .footer {
+            padding: 12px; text-align: center;
+            font-size: 11px; color: #C85A7C; opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">{{ title }}</div>
+        {% for r in ranking %}
+        <div class="item">
+            <div class="rank {% if r.rank == 1 %}top1{% elif r.rank == 2 %}top2{% elif r.rank == 3 %}top3{% endif %}">#{{ r.rank }}</div>
+            <div class="couple-avatars">
+                <img class="av" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ r.user_a }}&spec=100&t={{ range(1,99999)|random }}">
+                <span class="heart-icon">❤️</span>
+                <img class="av" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ r.user_b }}&spec=100&t={{ range(1,99999)|random }}">
+            </div>
+            <div class="info">
+                <div class="cp-names">{{ r.name_a }} & {{ r.name_b }}</div>
+                <div class="bar-wrap">
+                    <div class="bar-fill {% if r.value >= 100 %}full{% endif %}" style="width: {{ r.value }}%;"></div>
+                </div>
+            </div>
+            <div class="value-tag">{{ r.value }}%</div>
+        </div>
+        {% endfor %}
+        <div class="footer">好感度每月1日刷新 · 每日强娶同一人+1~10%</div>
+    </div>
+</body>
+</html>

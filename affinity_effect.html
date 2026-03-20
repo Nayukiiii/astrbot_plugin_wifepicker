@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #FFF0F5 0%, #FFE4EC 50%, #FFF0F5 100%);
+            width: 500px; height: 350px;
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden; position: relative;
+        }
+        .card {
+            background: rgba(255,255,255,0.95);
+            border: 3px solid #C85A7C;
+            box-shadow: 6px 6px 0px #FFD6E0, -2px -2px 0px #FFD6E0, inset 0 0 0 1px #FFB7C5;
+            width: 460px; padding: 28px 20px;
+            text-align: center; position: relative; z-index: 2;
+        }
+        .title {
+            font-size: 24px; font-weight: bold; color: #C85A7C;
+            margin-bottom: 18px; letter-spacing: 3px;
+            text-shadow: 1px 1px 0 #FFD6E0;
+        }
+        .couple {
+            display: flex; align-items: center; justify-content: center; gap: 16px;
+            margin-bottom: 14px;
+        }
+        .avatar {
+            width: 92px; height: 92px;
+            border: 3px solid #C85A7C;
+            box-shadow: 4px 4px 0px #FFB7C5;
+        }
+        .heart-center {
+            font-size: 40px; color: #C85A7C;
+            animation: pulse 1s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.25); }
+        }
+        .names { font-size: 17px; color: #4A3F4B; }
+        .names span { color: #C85A7C; font-weight: bold; }
+        .subtitle {
+            font-size: 13px; color: #8A7F8B; margin-top: 10px;
+            letter-spacing: 1px;
+        }
+        .bar-wrap {
+            margin: 12px auto 0; width: 280px; height: 16px;
+            background: #F5E6EA; position: relative;
+            box-shadow: inset 1px 1px 0 #E8D5E0, 2px 2px 0 #FFD6E0;
+        }
+        .bar-fill {
+            height: 100%; width: 100%;
+            background: linear-gradient(90deg, #FF8FAB, #C85A7C, #A0365A);
+        }
+        .bar-fill::after {
+            content: '✨'; position: absolute; right: 4px; top: -1px; font-size: 10px;
+        }
+        .petal { position: absolute; font-size: 20px; opacity: 0.4; z-index: 1; }
+        .p1 { top: 15px; left: 25px; } .p2 { top: 40px; right: 35px; }
+        .p3 { bottom: 25px; left: 55px; } .p4 { bottom: 50px; right: 45px; }
+        .p5 { top: 70px; left: 8px; } .p6 { top: 8px; right: 70px; }
+        .p7 { bottom: 10px; right: 15px; } .p8 { top: 100px; right: 10px; }
+    </style>
+</head>
+<body>
+    <div class="petal p1">🌸</div><div class="petal p2">🌸</div>
+    <div class="petal p3">🌸</div><div class="petal p4">🌸</div>
+    <div class="petal p5">🌸</div><div class="petal p6">🌸</div>
+    <div class="petal p7">🌸</div><div class="petal p8">🌸</div>
+    <div class="card">
+        <div class="title">🌸 恩 爱 认 证 🌸</div>
+        <div class="couple">
+            <img class="avatar" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ user_a_qq }}&spec=640">
+            <div class="heart-center">❤️</div>
+            <img class="avatar" src="https://q4.qlogo.cn/headimg_dl?dst_uin={{ user_b_qq }}&spec=640">
+        </div>
+        <div class="names"><span>{{ name_a }}</span> & <span>{{ name_b }}</span></div>
+        <div class="bar-wrap"><div class="bar-fill"></div></div>
+        <div class="subtitle">好感度 100% · 认证恩爱CP 💕</div>
+    </div>
+</body>
+</html>
