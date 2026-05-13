@@ -70,8 +70,7 @@ def record_active(plugin, event) -> None:
     if group_key not in plugin.active_users:
         plugin.active_users[group_key] = {}
     plugin.active_users[group_key][user_id] = time.time()
-    # preserve original save_json call as-is
-    save_json(plugin.active_file, plugin.active_users, plugin.records_file, plugin.config)
+    save_json(plugin.active_file, plugin.active_users, plugin.active_file, plugin.config)
 
 
 def clean_rbq_stats(plugin) -> None:

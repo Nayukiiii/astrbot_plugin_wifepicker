@@ -23,7 +23,7 @@ CMD_RI_GRAPH      = "日群友关系图"  # 今日日群友关系图
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
@@ -78,6 +78,8 @@ class RandomWifePlugin(Star):
         self.active_file = os.path.join(self.data_dir, "active_users.json")
         self.forced_file = os.path.join(self.data_dir, "forced_marriage.json")
         self.rbq_stats_file = os.path.join(self.data_dir, "rbq_stats.json")
+        self.usage_stats_file = os.path.join(self.data_dir, "usage_stats.json")
+        self.anime_link_file = os.path.join(self.data_dir, "anime_link_daily.json")
         
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir, exist_ok=True)
@@ -86,6 +88,13 @@ class RandomWifePlugin(Star):
         self.active_users = load_json(self.active_file, {})
         self.forced_records = load_json(self.forced_file, {})
         self.rbq_stats = load_json(self.rbq_stats_file, {})
+        self.usage_stats = load_json(
+            self.usage_stats_file,
+            {"commands": {}, "groups": {}, "users": {}, "daily": {}},
+        )
+        self.anime_link_daily = load_json(
+            self.anime_link_file, {"date": "", "groups": {}}
+        )
 
         # 日群友数据文件
         self.ri_stats_file = os.path.join(self.data_dir, "ri_stats.json")
@@ -135,11 +144,14 @@ class RandomWifePlugin(Star):
             "reset_records": self._cmd_reset_records,
             "reset_force_cd": self._cmd_reset_force_cd,
             "ri": self._cmd_ri,
+            "wo_ye_ri": self._cmd_wo_ye_ri,
             "ri_ranking": self._cmd_ri_ranking,
             "ri_graph": self._cmd_ri_graph,
             "affinity_query": self._cmd_affinity,
             "affinity_ranking": self._cmd_affinity_ranking,
             "love_ranking": self._cmd_love_ranking,
+            "today_status": self._cmd_today_status,
+            "anime_group_friend": self._cmd_anime_group_friend,
         }
         self._keyword_action_to_command_handler = {
             "draw_wife": "draw_wife",
@@ -151,11 +163,14 @@ class RandomWifePlugin(Star):
             "reset_records": "reset_records",
             "reset_force_cd": "reset_force_cd",
             "ri": CMD_RI,
+            "wo_ye_ri": "我也日",
             "ri_ranking": CMD_RI_RANKING,
             "ri_graph": CMD_RI_GRAPH,
             "affinity_query": "好感度",
             "affinity_ranking": "好感度排行",
             "love_ranking": "恩爱排行",
+            "today_status": "今日玩法",
+            "anime_group_friend": "老婆群友",
         }
         self._keyword_trigger_block_prefixes = ("/", "!", "！")
         logger.info(f"抽老婆插件已加载。数据目录: {self.data_dir}")
@@ -360,13 +375,13 @@ class RandomWifePlugin(Star):
         return rec["count"]
 
     def _get_keyword_trigger_mode(self) -> MatchMode:
-        """从配置中获取匹配模式，默认为包含匹配"""
+        """从配置中获取匹配模式，默认用开头匹配降低上手成本。"""
         # 这里的 config.get 会读取插件配置，建议在控制面板设置里加上这个 key
-        raw = self.config.get("keyword_trigger_mode", "contains")
+        raw = self.config.get("keyword_trigger_mode", "starts_with")
         try:
             return MatchMode(str(raw))
         except ValueError:
-            return MatchMode.CONTAINS
+            return MatchMode.STARTS_WITH
 
     def _clean_rbq_stats(self):
         return clean_rbq_stats(self)
@@ -406,10 +421,112 @@ class RandomWifePlugin(Star):
     def _record_active(self, event: AstrMessageEvent) -> None:
         return record_active(self, event)
 
+    def _inc_counter(self, data: dict, key: str, amount: int = 1) -> None:
+        data[key] = int(data.get(key, 0)) + amount
+
+    def _track_usage(self, event: AstrMessageEvent, command: str) -> None:
+        group_id = str(event.get_group_id() or "private")
+        user_id = str(event.get_sender_id() or "unknown")
+        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now().isoformat(timespec="seconds")
+
+        stats = self.usage_stats
+        stats.setdefault("commands", {})
+        stats.setdefault("groups", {})
+        stats.setdefault("users", {})
+        stats.setdefault("daily", {})
+
+        self._inc_counter(stats["commands"], command)
+
+        group_stats = stats["groups"].setdefault(group_id, {"commands": {}, "users": {}})
+        group_stats.setdefault("commands", {})
+        group_stats.setdefault("users", {})
+        self._inc_counter(group_stats["commands"], command)
+        self._inc_counter(group_stats["users"], user_id)
+
+        user_key = f"{group_id}:{user_id}"
+        user_stats = stats["users"].setdefault(
+            user_key,
+            {"first_seen": now, "last_seen": now, "commands": {}, "days": {}},
+        )
+        user_stats["last_seen"] = now
+        user_stats.setdefault("commands", {})
+        user_stats.setdefault("days", {})
+        self._inc_counter(user_stats["commands"], command)
+        self._inc_counter(user_stats["days"], today)
+
+        daily_stats = stats["daily"].setdefault(today, {"commands": {}, "groups": {}})
+        daily_stats.setdefault("commands", {})
+        daily_stats.setdefault("groups", {})
+        self._inc_counter(daily_stats["commands"], command)
+        daily_group = daily_stats["groups"].setdefault(
+            group_id, {"commands": {}, "users": {}}
+        )
+        daily_group.setdefault("commands", {})
+        daily_group.setdefault("users", {})
+        self._inc_counter(daily_group["commands"], command)
+        self._inc_counter(daily_group["users"], user_id)
+
+        save_json(self.usage_stats_file, self.usage_stats)
+
+    def _engagement_hint(self, kind: str = "default") -> str:
+        if not self.config.get("engagement_hints_enabled", True):
+            return ""
+
+        hints = {
+            "draw": "下一步：发「好感度」看进度，或「强娶 @TA」冲恋爱线。",
+            "limit": "今天还能玩「关系图」「好感度排行」「日群友」，不只抽一次就结束。",
+            "pool_empty": "让群里再有几个人随便说句话，活跃池热起来后就能开抽。",
+            "force": "继续线索：发「好感度 @TA」看进度；好感度满 100 会进恩爱榜。",
+            "ri": "群友可以接着发「我也日 @TA」，或者看「日群友关系图」。",
+            "status": "今日入口：抽老婆 / 强娶 @某人 / 好感度排行 / 关系图。",
+        }
+        return hints.get(kind, hints["draw"])
+
+    def _today_key(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _animewifex_config_dir(self) -> str:
+        custom_dir = str(self.config.get("animewifex_config_dir", "") or "").strip()
+        if custom_dir:
+            return custom_dir
+        try:
+            return os.path.join(StarTools.get_data_dir("astrbot_plugin_animewifex"), "config")
+        except Exception:
+            return os.path.join(os.getcwd(), "data", "astrbot_plugin_animewifex", "config")
+
+    def _anime_wife_display_name(self, img: str) -> str:
+        name = os.path.splitext(str(img or ""))[0].split("/")[-1]
+        if "!" in name:
+            source, chara = name.split("!", 1)
+            return f"《{source}》{chara}"
+        return name or "未知老婆"
+
+    def _get_anime_wife_today(self, group_id: str, user_id: str) -> dict | None:
+        config_path = os.path.join(self._animewifex_config_dir(), f"{group_id}.json")
+        cfg = load_json(config_path, {})
+        wife_data = cfg.get(user_id)
+        today = self._today_key()
+        if not isinstance(wife_data, list) or len(wife_data) < 2:
+            return None
+        if wife_data[1] != today:
+            return None
+        img = str(wife_data[0] or "")
+        return {
+            "img": img,
+            "name": self._anime_wife_display_name(img),
+            "owner": wife_data[2] if len(wife_data) >= 3 else "",
+        }
+
+    def _ensure_today_anime_link(self) -> None:
+        today = self._today_key()
+        if self.anime_link_daily.get("date") != today:
+            self.anime_link_daily = {"date": today, "groups": {}}
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def keyword_trigger(self, event: AstrMessageEvent):
         # 1. 检查开关
-        if not self.config.get("keyword_trigger_enabled", False):
+        if not self.config.get("keyword_trigger_enabled", True):
             return
 
         message_str = event.message_str
@@ -429,6 +546,10 @@ class RandomWifePlugin(Star):
         if route is None:
             route = self._keyword_router.match_command_route(message_str)
         if route:
+            if route.permission != PermissionLevel.MEMBER:
+                yield event.plain_result("管理员命令请使用带前缀的正式指令触发。")
+                event.stop_event()
+                return
             # 记录活跃（既然说话了就要进池子）
             self._record_active(event)
             # 找到对应的函数，比如 _cmd_draw_wife
@@ -464,6 +585,7 @@ class RandomWifePlugin(Star):
         save_json(self.active_file, self.active_users, self.active_file, self.config)
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "draw_wife")
 
         user_id, bot_id = str(event.get_sender_id()), str(event.get_self_id())
         self._cleanup_inactive(group_id)
@@ -497,7 +619,7 @@ class RandomWifePlugin(Star):
             yield event.chain_result(chain)
             return
 
-        daily_limit = self.config.get("daily_limit", 1)
+        daily_limit = self.config.get("daily_limit", 3)
         group_records = self._get_group_records(group_id)
         user_recs = [r for r in group_records if r["user_id"] == user_id]
         today_count = len(user_recs)
@@ -517,7 +639,10 @@ class RandomWifePlugin(Star):
                             {
                                 "type": "text",
                                 "data": {
-                                    "text": f" 你今天已经有老婆了哦❤️~\n她是：【{wife_name}】\n"
+                                    "text": (
+                                        f" 你今天已经有老婆了哦❤️~\n她是：【{wife_name}】\n"
+                                        f"{self._engagement_hint('limit')}"
+                                    )
                                 },
                             },
                             {"type": "image", "data": {"file": wife_avatar}},
@@ -529,12 +654,18 @@ class RandomWifePlugin(Star):
 
                 chain = [
                     Comp.At(qq=user_id),
-                    Comp.Plain(f" 你今天已经有老婆了哦❤️~\n她是：【{wife_name}】\n"),
+                    Comp.Plain(
+                        f" 你今天已经有老婆了哦❤️~\n她是：【{wife_name}】\n"
+                        f"{self._engagement_hint('limit')}"
+                    ),
                     Comp.Image.fromURL(wife_avatar),
                 ]
                 yield event.chain_result(chain)
             else:
-                text = f"你今天已经抽了{today_count}次老婆了，明天再来吧！"
+                text = (
+                    f"你今天已经抽了{today_count}次老婆了，明天再来吧！\n"
+                    f"{self._engagement_hint('limit')}"
+                )
                 if self._can_onebot_withdraw(event):
                     message_id = await self._send_onebot_message(
                         event, message=[{"type": "text", "data": {"text": text}}]
@@ -591,7 +722,10 @@ class RandomWifePlugin(Star):
             pool = [uid for uid in active_pool.keys() if uid not in excluded]
 
         if not pool:
-            yield event.plain_result("老婆池为空（需有人在30天内发言）。")
+            yield event.plain_result(
+                "老婆池还是空的（候选人需要在本群 30 天内发过言）。\n"
+                f"{self._engagement_hint('pool_empty')}"
+            )
             return
 
         wife_id = random.choice(pool)
@@ -634,7 +768,8 @@ class RandomWifePlugin(Star):
         avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={wife_id}&spec=640"
         suffix_text = (
             "\n请好好对待她哦❤️~ \n"
-            f"剩余抽取次数：{max(0, daily_limit - today_count - 1)}次"
+            f"剩余抽取次数：{max(0, daily_limit - today_count - 1)}次\n"
+            f"{self._engagement_hint('draw')}"
         )
         if self._can_onebot_withdraw(event):
             message_id = await self._send_onebot_message(
@@ -670,11 +805,12 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "show_history")
 
         user_id = str(event.get_sender_id())
         today = datetime.now().strftime("%Y-%m-%d")
         if self.records.get("date") != today:
-            yield event.plain_result("你今天还没有抽过老婆哦~")
+            yield event.plain_result("你今天还没有抽过老婆哦~\n先发「抽老婆」开局。")
             return
 
         group_recs = self.records.get("groups", {}).get(group_id, {}).get("records", [])
@@ -689,6 +825,7 @@ class RandomWifePlugin(Star):
             time_str = datetime.fromisoformat(r["timestamp"]).strftime("%H:%M")
             res.append(f"{i}. 【{r['wife_name']}】 ({time_str})")
         res.append(f"\n剩余次数：{max(0, daily_limit - len(user_recs))}次")
+        res.append(self._engagement_hint("draw"))
         yield event.plain_result("\n".join(res))
 
     @filter.command("强娶")
@@ -707,6 +844,7 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "force_marry")
 
         now = time.time()
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -737,7 +875,7 @@ class RandomWifePlugin(Star):
             return
 
         # ★ 检查2：强娶次数
-        cd_mode = self.config.get("force_marry_cd_mode", "days")
+        cd_mode = self.config.get("force_marry_cd_mode", "daily")
         if cd_mode == "daily":
             daily_limit = int(self.config.get("force_marry_daily_limit", 2))
             used = self._get_force_daily_count(group_id, user_id)
@@ -746,7 +884,8 @@ class RandomWifePlugin(Star):
                 rem = (tomorrow - datetime.now()).total_seconds()
                 yield event.plain_result(
                     f"你今天的强娶次数已用完（{used}/{daily_limit}）！\n"
-                    f"明天 00:00 刷新，还剩 {int(rem//3600)}小时{int((rem%3600)//60)}分。")
+                    f"明天 00:00 刷新，还剩 {int(rem//3600)}小时{int((rem%3600)//60)}分。\n"
+                    f"{self._engagement_hint('limit')}")
                 return
         else:
             last_time = self.forced_records.setdefault(group_id, {}).get(user_id, 0)
@@ -758,13 +897,17 @@ class RandomWifePlugin(Star):
                 d, h, m = int(remaining // 86400), int((remaining % 86400) // 3600), int((remaining % 3600) // 60)
                 yield event.plain_result(
                     f"你已经强娶过啦！\n请等待：{d}天{h}小时{m}分后再试。\n"
-                    f"(重置时间：{target_reset_dt.strftime('%m-%d %H:%M')})")
+                    f"(重置时间：{target_reset_dt.strftime('%m-%d %H:%M')})\n"
+                    f"{self._engagement_hint('limit')}")
                 return
 
         # ★ 检查3：@目标
         target_id = extract_target_id_from_message(event)
         if not target_id or target_id == "all":
-            yield event.plain_result("请 @ 一个你想强娶的人。")
+            yield event.plain_result(
+                "请 @ 一个你想强娶的人。\n"
+                "例：强娶 @某人；成功后会增加好感度。"
+            )
             return
         if target_id == user_id:
             yield event.plain_result("不能娶自己！")
@@ -903,7 +1046,8 @@ class RandomWifePlugin(Star):
             avatar_url_jl = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
             text_jl = (
                 f" 💕 你强娶【{target_name}】触发了恋爱邀请！\n"
-                f"好感度：{new_aff}%\n正在向对方发送恋爱邀请..."
+                f"好感度：{new_aff}%\n正在向对方发送恋爱邀请...\n"
+                f"{self._engagement_hint('force')}"
             )
             if self._can_onebot_withdraw(event):
                 mid_jl = await self._send_onebot_message(event, message=[
@@ -936,6 +1080,7 @@ class RandomWifePlugin(Star):
 
         avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
         text = f" 你今天强娶了【{target_name}】哦❤️~\n请对她好一点哦~{aff_msg}{love_msg}\n"
+        text += self._engagement_hint("force")
 
         if self._can_onebot_withdraw(event):
             mid = await self._send_onebot_message(event, message=[
@@ -1160,6 +1305,7 @@ class RandomWifePlugin(Star):
             return
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config): return
+        self._track_usage(event, "affinity")
         user_id = str(event.get_sender_id())
         target_id = extract_target_id_from_message(event)
 
@@ -1247,6 +1393,7 @@ class RandomWifePlugin(Star):
             yield event.plain_result("私聊看不了榜单哦~"); return
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config): return
+        self._track_usage(event, "affinity_ranking")
         pairs = self._get_all_affinity_pairs(group_id)
         if not pairs:
             yield event.plain_result("本群还没有好感度记录~"); return
@@ -1300,6 +1447,7 @@ class RandomWifePlugin(Star):
             yield event.plain_result("私聊看不了榜单哦~"); return
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config): return
+        self._track_usage(event, "love_ranking")
 
         all_pairs = self._get_all_affinity_pairs(group_id)
         # 只取达成过100%的CP
@@ -1374,6 +1522,7 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "cg")
 
         cg_files = self._list_cg_files()
 
@@ -1469,6 +1618,7 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "show_graph")
 
         iter_count = self.config.get("iterations", 140)
 
@@ -1573,6 +1723,9 @@ class RandomWifePlugin(Star):
             return
             
         group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+        self._track_usage(event, "rbq_ranking")
         self._clean_rbq_stats() # 渲染前强制清理一次过期数据
         
         group_data = self.rbq_stats.get(group_id, {})
@@ -1811,29 +1964,255 @@ class RandomWifePlugin(Star):
     async def _cmd_show_help(self, event: AstrMessageEvent):
         if not is_allowed_group(str(event.get_group_id()), self.config):
             return
+        self._track_usage(event, "help")
         daily_limit = self.config.get("daily_limit", 3)
         force_daily = self.config.get("force_marry_daily_limit", 2)
+        ri_prob = self.config.get("ri_probability", 80)
         help_text = (
-            "===== 🌸 抽老婆帮助 =====\n"
-            "1. 【抽老婆】：随机抽取今日老婆\n"
-            "2. 【强娶@某人】：强行更换今日老婆\n"
-            "3. 【我的老婆】：查看今日历史与次数\n"
-            "4. 【重置记录】：(管理员) 清空数据\n"
-            "5. 【关系图】：查看群友老婆的关系\n"
-            "6. 【rbq排行】：近30天被强娶排行\n"
-            "\n===== 💕 好感度 & 恋爱 =====\n"
-            "7. 【好感度】：查看自己所有好感度\n"
-            "8. 【好感度 @某人】：查看与某人好感度\n"
-            "9. 【好感度排行】：本群CP好感度排行\n"
-            "10. 【恩爱排行】：本群恩爱CP排行\n"
-            f"\n当前每日上限：{daily_limit}次 | 强娶每日：{force_daily}次\n"
-            "\n===== 💦 日群友 =====\n"
-            "11. 【日群友】：概率触发，随机日群友\n"
-            "12. 【日群友 @某人】：指定日\n"
-            "13. 【日群友排行】：近30天排行\n"
-            "14. 【日群友关系图】：今日图谱\n"
+            "===== 🌸 今日怎么玩 =====\n"
+            "先发【抽老婆】开局，再用【强娶 @某人】推进好感度。\n"
+            "想看局势：发【今日玩法】或【关系图】。\n"
+            "\n===== 核心入口 =====\n"
+            "抽老婆：随机抽取今日老婆\n"
+            "我的老婆：查看今日历史与剩余次数\n"
+            "强娶 @某人：指定目标并增加好感度\n"
+            "好感度 / 好感度 @某人：查看恋爱进度\n"
+            "\n===== 群内看点 =====\n"
+            "好感度排行 / 恩爱排行 / rbq排行\n"
+            "日群友 / 我也日 @某人 / 日群友排行 / 日群友关系图\n"
+            f"\n当前节奏：抽老婆每日 {daily_limit} 次，强娶每日 {force_daily} 次，日群友概率 {ri_prob}%。\n"
+            "小提示：关键词触发开启后，不带 / 也能直接玩。"
         )
         yield event.plain_result(help_text)
+
+    @filter.command("今日玩法", alias={"老婆状态", "老婆日报"})
+    async def today_status(self, event: AstrMessageEvent):
+        async for result in self._cmd_today_status(event):
+            yield result
+
+    async def _cmd_today_status(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+        self._track_usage(event, "today_status")
+
+        self._ensure_today_records()
+        self._ensure_today_ri_records()
+        group_records = self.records.get("groups", {}).get(group_id, {}).get("records", [])
+        ri_records = self.ri_records.get("groups", {}).get(group_id, {}).get("records", [])
+        active_count = len(self.active_users.get(group_id, {}))
+        drawers = {str(r.get("user_id")) for r in group_records}
+        wife_targets = {str(r.get("wife_id")) for r in group_records}
+        forced_count = sum(1 for r in group_records if r.get("forced"))
+        locked_count = sum(
+            1
+            for rec in self.force_lock.get(group_id, {}).values()
+            if rec.get("date") == datetime.now().strftime("%Y-%m-%d")
+            and rec.get("count", 0) >= int(self.config.get("force_marry_lock_count", 2))
+        )
+
+        user_map = {}
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                members = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id)
+                )
+                if isinstance(members, dict) and "data" in members:
+                    members = members["data"]
+                for m in members:
+                    uid = str(m.get("user_id"))
+                    user_map[uid] = m.get("card") or m.get("nickname") or uid
+        except Exception:
+            pass
+
+        pairs = self._get_all_affinity_pairs(group_id)
+        top_pair = "暂无"
+        if pairs:
+            top = pairs[0]
+            name_a = user_map.get(top["user_a"], f"用户({top['user_a']})")
+            name_b = user_map.get(top["user_b"], f"用户({top['user_b']})")
+            top_pair = f"{name_a} -> {name_b}：{top['value']}%"
+
+        lines = [
+            "===== 今日老婆局势 =====",
+            f"活跃池：{active_count} 人",
+            f"已抽老婆：{len(drawers)} 人 / {len(group_records)} 次",
+            f"今日被抽中：{len(wife_targets)} 人",
+            f"强娶记录：{forced_count} 次，上锁保护：{locked_count} 人",
+            f"日群友：{len(ri_records)} 次",
+            f"最高好感度：{top_pair}",
+            "",
+            self._engagement_hint("status"),
+        ]
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("老婆群友", alias={"抽完老婆抽群友", "老婆搭子", "二次元老婆群友"})
+    async def anime_group_friend(self, event: AstrMessageEvent):
+        async for result in self._cmd_anime_group_friend(event):
+            yield result
+
+    async def _cmd_anime_group_friend(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+        if not self.config.get("animewifex_link_enabled", True):
+            yield event.plain_result("animewifex 联动当前未开启。")
+            return
+        self._track_usage(event, "anime_group_friend")
+
+        user_id = str(event.get_sender_id())
+        bot_id = str(event.get_self_id())
+        anime_wife = self._get_anime_wife_today(group_id, user_id)
+        if not anime_wife:
+            yield event.plain_result(
+                "你今天还没有 animewifex 的二次元老婆。\n"
+                "先发「抽老婆」抽二次元老婆，再发「老婆群友」抽今日群友搭子。"
+            )
+            return
+
+        self._cleanup_inactive(group_id)
+        members = []
+        current_member_ids: list[str] = []
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                assert isinstance(event, AiocqhttpMessageEvent)
+                members = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id)
+                )
+                if isinstance(members, dict) and "data" in members:
+                    members = members["data"]
+                current_member_ids = [str(m.get("user_id")) for m in members]
+        except Exception as e:
+            logger.error(f"获取群成员列表失败，将使用活跃缓存: {e}")
+
+        self._ensure_today_anime_link()
+        group_links = self.anime_link_daily["groups"].setdefault(group_id, {})
+        existing = group_links.get(user_id)
+        if isinstance(existing, dict):
+            friend_id = str(existing.get("friend_id", ""))
+            if friend_id:
+                friend_name = existing.get("friend_name") or f"用户({friend_id})"
+                try:
+                    friend_name = resolve_member_name(members, user_id=friend_id, fallback=friend_name)
+                except Exception:
+                    pass
+                avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={friend_id}&spec=640"
+                text = (
+                    f"今日联动已生成：\n"
+                    f"二次元老婆：【{anime_wife['name']}】\n"
+                    f"群友搭子：【{friend_name}】\n"
+                    "发「今日玩法」看看本群今天还有什么局。"
+                )
+                yield event.chain_result([Comp.Plain(text), Comp.Image.fromURL(avatar_url)])
+                return
+
+        active_pool = self.active_users.get(group_id, {})
+        excluded = {user_id, bot_id, "0"}
+        if current_member_ids:
+            pool = [
+                uid for uid in active_pool.keys()
+                if uid not in excluded and uid in current_member_ids
+            ]
+        else:
+            pool = [uid for uid in active_pool.keys() if uid not in excluded]
+
+        if not pool:
+            yield event.plain_result(
+                "今天还抽不到群友搭子，活跃池里没有可选群友。\n"
+                f"{self._engagement_hint('pool_empty')}"
+            )
+            return
+
+        friend_id = random.choice(pool)
+        friend_name = f"用户({friend_id})"
+        try:
+            friend_name = resolve_member_name(members, user_id=friend_id, fallback=friend_name)
+        except Exception:
+            pass
+
+        group_links[user_id] = {
+            "anime_wife": anime_wife["name"],
+            "anime_img": anime_wife["img"],
+            "friend_id": friend_id,
+            "friend_name": friend_name,
+            "timestamp": datetime.now().isoformat(),
+        }
+        save_json(self.anime_link_file, self.anime_link_daily)
+
+        avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={friend_id}&spec=640"
+        text = (
+            "今日联动完成：\n"
+            f"二次元老婆：【{anime_wife['name']}】\n"
+            f"群友搭子：【{friend_name}】\n"
+            "可以接着发「强娶 @TA」把群友线也推进一下。"
+        )
+        yield event.chain_result([Comp.At(qq=user_id), Comp.Plain(text), Comp.Image.fromURL(avatar_url)])
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("老婆插件数据", alias={"老婆数据", "老婆留存"})
+    async def usage_stats_cmd(self, event: AstrMessageEvent):
+        async for result in self._cmd_usage_stats(event):
+            yield result
+
+    async def _cmd_usage_stats(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+        self._track_usage(event, "usage_stats")
+
+        stats = self.usage_stats
+        group_stats = stats.get("groups", {}).get(group_id, {})
+        command_counts = group_stats.get("commands", {})
+        user_counts = group_stats.get("users", {})
+        top_commands = sorted(command_counts.items(), key=lambda x: x[1], reverse=True)[:6]
+        top_text = "、".join(f"{name}:{count}" for name, count in top_commands) or "暂无"
+
+        today = datetime.now().date()
+        daily = stats.get("daily", {})
+        rows = []
+        total_7d_users: set[str] = set()
+        for i in range(6, -1, -1):
+            day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            group_daily = daily.get(day, {}).get("groups", {}).get(group_id, {})
+            users = set(group_daily.get("users", {}).keys())
+            total_7d_users.update(users)
+            rows.append(f"{day[5:]}：{len(users)}人/{sum(group_daily.get('commands', {}).values())}次")
+
+        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        today_key = today.strftime("%Y-%m-%d")
+        users_today = set(
+            daily.get(today_key, {}).get("groups", {}).get(group_id, {}).get("users", {}).keys()
+        )
+        users_yesterday = set(
+            daily.get(yesterday, {}).get("groups", {}).get(group_id, {}).get("users", {}).keys()
+        )
+        d1_return = len(users_today & users_yesterday)
+
+        lines = [
+            "===== 老婆插件数据 =====",
+            f"本群累计使用用户：{len(user_counts)} 人",
+            f"近 7 天使用用户：{len(total_7d_users)} 人",
+            f"昨日到今日回访：{d1_return} 人",
+            f"热门命令：{top_text}",
+            "",
+            "近 7 天：",
+            *rows,
+            "",
+            "观察建议：如果近 7 天人数低，先开关键词触发、提高每日次数，再用「今日玩法」把入口贴到群里。",
+        ]
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("debug_graph")
     async def debug_graph(self, event: AstrMessageEvent):
@@ -1954,6 +2333,7 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "ri")
 
         user_id = str(event.get_sender_id())
         bot_id = str(event.get_self_id())
@@ -1977,9 +2357,9 @@ class RandomWifePlugin(Star):
         excluded = {bot_id, user_id, "0"}
 
         # 概率配置
-        ri_prob = float(self.config.get("ri_probability", 30))
+        ri_prob = float(self.config.get("ri_probability", 80))
         ri_prob = max(0.0, min(100.0, ri_prob))
-        ri_at_prob = float(self.config.get("ri_at_probability", 30))
+        ri_at_prob = float(self.config.get("ri_at_probability", 80))
         ri_at_prob = max(0.0, min(100.0, ri_at_prob))
         ri_target_max = int(self.config.get("ri_target_max", 3))
 
@@ -2010,7 +2390,10 @@ class RandomWifePlugin(Star):
             # 概率判定（失败不消耗额度）
             if random.uniform(0, 100) > ri_at_prob:
                 fake_pct = random.randint(1, 99)
-                yield event.plain_result(f"在 {fake_pct}% 的时候群友跑掉了")
+                yield event.plain_result(
+                    f"在 {fake_pct}% 的时候群友跑掉了。\n"
+                    "这次不消耗额度，可以再试一次。"
+                )
                 return
 
             # 概率成功后，检查发起者@指定模式今日额度
@@ -2084,7 +2467,8 @@ class RandomWifePlugin(Star):
                 f"{target_name} 今天还剩 {remaining} 次可以被日\n"
                 f"（你的@指定额度已用完，今日无法再@指定日群友）\n"
                 f"群友们可以发送 /我也日 @{target_name} 一起来日！"
-                f"{unlock_msg}"
+                f"{unlock_msg}\n"
+                f"{self._engagement_hint('ri')}"
             )
             target_avatar = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
 
@@ -2116,7 +2500,10 @@ class RandomWifePlugin(Star):
 
             if random.uniform(0, 100) > ri_prob:
                 fake_pct = random.randint(1, 99)
-                yield event.plain_result(f"在 {fake_pct}% 的时候群友跑掉了")
+                yield event.plain_result(
+                    f"在 {fake_pct}% 的时候群友跑掉了。\n"
+                    "这次不消耗额度，可以再试一次。"
+                )
                 return
 
             active_pool = self.active_users.get(group_id, {})
@@ -2126,7 +2513,10 @@ class RandomWifePlugin(Star):
                 pool = [uid for uid in active_pool.keys() if uid not in excluded]
 
             if not pool:
-                yield event.plain_result("群友池为空，没有可以日的人（需有人在30天内发言）。")
+                yield event.plain_result(
+                    "群友池为空，没有可以互动的人（需有人在 30 天内发言）。\n"
+                    f"{self._engagement_hint('pool_empty')}"
+                )
                 return
 
             target_id = random.choice(pool)
@@ -2134,7 +2524,7 @@ class RandomWifePlugin(Star):
             # ★ 恋爱保护：选到恋爱中的人提示跑掉，不消耗额度
             target_pl_random = self._get_pure_love_partner(group_id, target_id)
             if target_pl_random:
-                target_name_tmp = user_map.get(target_id, f"用户({target_id})")
+                target_name_tmp = f"用户({target_id})"
                 try:
                     if event.get_platform_name() == "aiocqhttp":
                         target_name_tmp = resolve_member_name(members, user_id=target_id, fallback=target_name_tmp)
@@ -2173,7 +2563,11 @@ class RandomWifePlugin(Star):
             })
             save_json(self.ri_records_file, self.ri_records)
 
-            text = f" 日群友成功！🎉\n【{user_name}】今天日了【{target_name}】！\n（你的随机额度已用完，今日无法再随机日群友）"
+            text = (
+                f" 日群友成功！🎉\n【{user_name}】今天日了【{target_name}】！\n"
+                f"（你的随机额度已用完，今日无法再随机日群友）\n"
+                f"{self._engagement_hint('ri')}"
+            )
             target_avatar = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
 
             if self._can_onebot_withdraw(event):
@@ -2209,6 +2603,7 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "wo_ye_ri")
 
         user_id = str(event.get_sender_id())
         bot_id = str(event.get_self_id())
@@ -2311,7 +2706,8 @@ class RandomWifePlugin(Star):
             suffix = f"\n{target_name} 今天还剩 {remaining} 次可以被日"
         text = (
             f" 跟日成功！🔥\n【{user_name}】也日了【{target_name}】！{suffix}\n"
-            f"（你今天还剩 {invite_remaining} 次跟日额度）"
+            f"（你今天还剩 {invite_remaining} 次跟日额度）\n"
+            f"{self._engagement_hint('ri')}"
         )
         target_avatar = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
 
@@ -2346,6 +2742,9 @@ class RandomWifePlugin(Star):
             return
 
         group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+        self._track_usage(event, "ri_ranking")
         self._clean_ri_stats()
 
         group_data = self.ri_stats.get(group_id, {})
@@ -2389,6 +2788,8 @@ class RandomWifePlugin(Star):
         with open(template_path, "r", encoding="utf-8") as f:
             template_content = f.read()
 
+        rank_width = 400
+        dynamic_height = 100 + len(sorted_list) * 60 + 50
         logger.info(f"[日排行] 模板读取完成，开始渲染，高度={dynamic_height}")  # ← 加这里
 
         try:
@@ -2424,6 +2825,7 @@ class RandomWifePlugin(Star):
         group_id = str(event.get_group_id())
         if not is_allowed_group(group_id, self.config):
             return
+        self._track_usage(event, "ri_graph")
 
         self._ensure_today_ri_records()
         group_ri_records = self.ri_records.get("groups", {}).get(group_id, {}).get("records", [])
@@ -2515,6 +2917,8 @@ class RandomWifePlugin(Star):
         save_json(self.pure_love_file, self.pure_love)
         save_json(self.affinity_file, self.affinity)
         save_json(self.force_daily_file, self.force_daily)
+        save_json(self.usage_stats_file, self.usage_stats)
+        save_json(self.anime_link_file, self.anime_link_daily)
 
         # 取消尚未执行的撤回任务，避免插件卸载后仍调用协议端。
         for task in tuple(self._withdraw_tasks):

@@ -41,9 +41,12 @@
 | `/今日老婆` | `抽老婆` | 用户 | 随机抽取今日老婆（恋爱中则直接显示伴侣） |
 | `/强娶 @用户` | — | 用户 | 消耗次数强制与指定用户建立羁绊，并增加好感度 |
 | `/我的老婆` | `抽取历史` | 用户 | 查看今日抽取记录与剩余次数 |
+| `/今日玩法` | `老婆状态` / `老婆日报` | 用户 | 查看本群今日活跃池、抽取、强娶、日群友和好感度概况 |
+| `/老婆群友` | `抽完老婆抽群友` / `老婆搭子` | 用户 | 读取 animewifex 今日二次元老婆，并抽取一位本群活跃群友组成今日联动 |
 | `/关系图` | — | 用户 | 生成并发送本群今日老婆关系网络图 |
 | `/rbq排行` | — | 用户 | 展示近 30 天被强娶次数排行（前 10 名） |
 | `/抽老婆帮助` | `老婆插件帮助` | 用户 | 查看插件内置的指令说明 |
+| `/老婆插件数据` | `老婆数据` / `老婆留存` | 管理员 | 查看本群近 7 天使用人数、热门命令和回访概况 |
 | `/重置记录` | — | 管理员 | 清空本群今日所有抽取记录 |
 | `/重置强娶时间` | — | 管理员 | 重置本群所有强娶冷却（含上锁记录） |
 | `/重置强娶次数` | — | 管理员 | 重置本群今日强娶次数（冷却时间不变，仅 daily 模式） |
@@ -70,8 +73,8 @@
 | `/日群友排行` | 用户 | 近 30 天日群友次数排行（前 10） |
 | `/日群友关系图` | 用户 | 生成本群今日日群友关系图 |
 
-> 若在插件配置中开启 `keyword_trigger_enabled`，以上指令均可作为关键词触发，无需 `/` 前缀。
-> 关键词触发遵循相同权限控制，管理员指令仍仅管理员可用。
+> 默认开启 `keyword_trigger_enabled`，常用用户指令可作为关键词触发，无需 `/` 前缀。
+> 管理员指令需要使用带前缀的正式指令触发，避免关键词绕过权限校验。
 > 若在 AstrBot 指令管理中禁用某条指令，对应关键词触发也会同步失效。
 
 ## 功能演示
@@ -96,31 +99,43 @@
 
 | 配置键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `daily_limit` | int | 1 | 每人每天可抽取今日老婆的次数上限 |
-| `max_records` | int | 500 | 全局 JSON 存储的最大记录条数 |
+| `daily_limit` | int | 3 | 每人每天可抽取今日老婆的次数上限 |
+| `max_records` | int | 2000 | 全局 JSON 存储的最大记录条数 |
 | `excluded_users` | list | [] | 永远不会被抽中的 QQ 号列表（今日老婆池排除） |
 | `force_marry_excluded_users` | list | [] | 强娶排除列表，列表中的用户无法被强娶 |
 | `whitelist_groups` | list | [] | 白名单模式：仅在此列表中的群生效 |
 | `blacklist_groups` | list | [] | 黑名单模式：列表中的群禁用插件 |
-| `auto_set_other_half` | bool | false | 自动设置对方老婆（对方当天无记录时才会生效） |
+| `auto_set_other_half` | bool | true | 自动设置对方老婆（对方当天无记录时才会生效） |
 | `auto_withdraw_enabled` | bool | false | 定时自动撤回消息（仅 aiocqhttp/OneBot 可用） |
 | `auto_withdraw_delay_seconds` | int | 5 | 自动撤回延迟秒数 |
+| `engagement_hints_enabled` | bool | true | 在结果中追加下一步玩法提示 |
+| `animewifex_link_enabled` | bool | true | 是否开启 animewifex 今日老婆联动 |
+| `animewifex_config_dir` | string | "" | animewifex 的 config 目录，留空自动使用默认数据目录 |
 
 ### 关键词触发配置
 
 | 配置键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `keyword_trigger_enabled` | bool | false | 是否启用关键词触发（无需 `/` 前缀） |
-| `keyword_trigger_mode` | string | `contains` | 关键词匹配模式：`exact` / `starts_with` / `contains` |
+| `keyword_trigger_enabled` | bool | true | 是否启用关键词触发（无需 `/` 前缀） |
+| `keyword_trigger_mode` | string | `starts_with` | 关键词匹配模式：`exact` / `starts_with` / `contains` |
+
+### 日群友配置
+
+| 配置键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `ri_probability` | float | 80 | 随机日群友成功概率，失败不消耗额度 |
+| `ri_at_probability` | float | 80 | @指定日群友成功概率，失败不消耗额度 |
+| `ri_target_max` | int | 3 | 每人每天最多被 @ 指定日次数 |
+| `ri_invite_max` | int | 3 | 每人每天最多跟日次数 |
 
 ### 强娶配置
 
 | 配置键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `force_marry_cd_mode` | string | `days` | 强娶冷却模式：`days`（天数CD）/ `daily`（每日次数） |
-| `force_marry_cd` | int | 3 | days 模式下的冷却天数 |
+| `force_marry_cd_mode` | string | `daily` | 强娶冷却模式：`days`（天数CD）/ `daily`（每日次数） |
+| `force_marry_cd` | int | 1 | days 模式下的冷却天数 |
 | `force_marry_daily_limit` | int | 2 | daily 模式下每人每日强娶次数上限 |
-| `force_marry_wife_limit` | int | 1 | 每人每日可拥有的强娶老婆上限 |
+| `force_marry_wife_limit` | int | 2 | 每人每日可拥有的强娶老婆上限 |
 | `force_marry_lock_count` | int | 2 | 单日被强娶达此次数后触发上锁保护 |
 
 ### 好感度 & 恋爱配置

@@ -3,19 +3,19 @@
         "type": "int",
         "description": "每日抽取上限",
         "hint": "每位用户每天可以抽取老婆的次数上限。",
-        "default": 1
+        "default": 3
     },
     "force_marry_cd": {
         "type": "int",
         "description": "强娶冷却天数",
         "hint": "一个人每隔多少天可以强娶一次别人。",
-        "default": 3
+        "default": 1
     },
     "max_records": {
         "type": "int",
         "description": "活跃群友记录上限",
         "hint": "跨群累计活跃用户总记录条数，作为抽老婆的候选池。达到此数值后将自动清理最沉默的群友。如果你加的群很多，而且都比较活跃，请调高此数值。",
-        "default": 500
+        "default": 2000
     },
     "excluded_users": {
         "type": "list",
@@ -55,25 +55,25 @@
     "keyword_trigger_enabled": {
         "type": "bool",
         "description": "关键词触发",
-        "hint": "开启后，直接发送“抽老婆/强娶/关系图/抽老婆帮助”等关键词即可触发对应指令，无需指令前缀（如 /）。默认关闭以避免误触。",
-        "default": false
+        "hint": "开启后，直接发送“抽老婆/强娶/关系图/抽老婆帮助”等关键词即可触发对应指令，无需指令前缀（如 /）。默认开启以降低群友上手门槛。",
+        "default": true
     },
     "keyword_trigger_mode": {
         "type": "string",
         "description": "关键词匹配模式",
-        "hint": "exact：消息去两端空白后必须完全相等；starts_with：以关键词开头即可；contains：包含关键词即可。建议保持 exact 以避免误触。",
+        "hint": "exact：消息去两端空白后必须完全相等；starts_with：以关键词开头即可；contains：包含关键词即可。建议 starts_with，既容易触发又不容易误触。",
         "options": [
             "exact",
             "starts_with",
             "contains"
         ],
-        "default": "exact"
+        "default": "starts_with"
     },
     "auto_set_other_half": {
         "type": "bool",
         "description": "自动设置对方老婆",
-        "hint": "开启后，抽到老婆时若对方今天还没有老婆记录，将自动给对方设置“你”为老婆（对方仍可自行抽取/强娶，视每日上限而定）。默认关闭。",
-        "default": false
+        "hint": "开启后，抽到老婆时若对方今天还没有老婆记录，将自动给对方设置“你”为老婆（对方仍可自行抽取/强娶，视每日上限而定）。默认开启，让关系图更快热起来。",
+        "default": true
     },
     "auto_withdraw_enabled": {
         "type": "bool",
@@ -96,7 +96,7 @@
         "type": "float",
         "description": "日群友随机模式触发概率（%）",
         "hint": "发送\"日群友\"（不带@）的触发概率，取值 0~100。失败不消耗次数。",
-        "default": 30,
+        "default": 80,
         "slider": {
             "min": 0,
             "max": 100,
@@ -107,7 +107,7 @@
         "type": "float",
         "description": "日群友@指定模式触发概率（%）",
         "hint": "发送\"日群友 @某人\"的触发概率，取值 0~100。概率成功后才消耗@指定额度。",
-        "default": 30,
+        "default": 80,
         "slider": {
             "min": 0,
             "max": 100,
@@ -129,12 +129,12 @@
     "force_marry_cd_mode": {
         "type": "string",
         "description": "强娶冷却模式",
-        "hint": "daily：每天0点刷新，每人每天只能强娶一次；days：原来的天数CD模式（根据force_marry_cd配置天数）。",
+        "hint": "daily：每天0点刷新，次数由 force_marry_daily_limit 控制；days：原来的天数CD模式（根据 force_marry_cd 配置天数）。",
         "options": [
             "daily",
             "days"
         ],
-        "default": "days"
+        "default": "daily"
     },
     "force_marry_lock_count": {
         "type": "int",
@@ -151,8 +151,8 @@
     "force_marry_wife_limit": {
         "type": "int",
         "description": "强娶今日老婆上限",
-        "hint": "每人每天通过强娶最多可以拥有几个不同的老婆。超过上限后无法再强娶新目标。默认1即保持原来行为。",
-        "default": 1,
+        "hint": "每人每天通过强娶最多可以拥有几个不同的老婆。超过上限后无法再强娶新目标。",
+        "default": 2,
         "slider": {
             "min": 1,
             "max": 10,
@@ -175,5 +175,23 @@
         "description": "被日解锁次数",
         "hint": "上锁的用户被日群友@指定日达到此次数后，自动解锁可再被强娶。",
         "default": 3
+    },
+    "engagement_hints_enabled": {
+        "type": "bool",
+        "description": "互动引导提示",
+        "hint": "开启后，抽老婆/强娶/日群友等结果会附带下一步玩法提示，用于提升新用户留存。",
+        "default": true
+    },
+    "animewifex_link_enabled": {
+        "type": "bool",
+        "description": "animewifex联动",
+        "hint": "开启后，可用“老婆群友/抽完老婆抽群友”读取 animewifex 今日二次元老婆，并从本群活跃池抽一个群友搭子。",
+        "default": true
+    },
+    "animewifex_config_dir": {
+        "type": "string",
+        "description": "animewifex配置目录",
+        "hint": "通常留空即可自动读取 astrbot_plugin_animewifex/config。若 animewifex 数据目录不在默认位置，可填写其 config 目录绝对路径。",
+        "default": ""
     }
 }
