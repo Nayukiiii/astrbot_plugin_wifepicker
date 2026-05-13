@@ -193,5 +193,33 @@
         "description": "animewifex配置目录",
         "hint": "通常留空即可自动读取 astrbot_plugin_animewifex/config。若 animewifex 数据目录不在默认位置，可填写其 config 目录绝对路径。",
         "default": ""
+    },
+    "animewifex_link_affinity_gain_min": {
+        "type": "int",
+        "description": "联动好感度最小增量",
+        "hint": "老婆群友强联动成功时，给用户与群友关系增加的好感度下限。",
+        "default": 5,
+        "slider": {
+            "min": 0,
+            "max": 50,
+            "step": 1
+        }
+    },
+    "animewifex_link_affinity_gain_max": {
+        "type": "int",
+        "description": "联动好感度最大增量",
+        "hint": "老婆群友强联动成功时，给用户与群友关系增加的好感度上限。",
+        "default": 15,
+        "slider": {
+            "min": 0,
+            "max": 50,
+            "step": 1
+        }
+    },
+    "animewifex_link_add_ri_record": {
+        "type": "bool",
+        "description": "联动写入日群友图",
+        "hint": "开启后，老婆群友结果会同步进入日群友关系图、日群友统计和今日玩法。",
+        "default": true
     }
 }

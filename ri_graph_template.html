@@ -39,6 +39,7 @@
         .legend .at { color: #C85A7C; }
         .legend .invite { color: #D4A5E0; }
         .legend .random { color: #FFB7C5; }
+        .legend .anime { color: #4E8C8A; }
     </style>
 </head>
 <body>
@@ -47,6 +48,7 @@
         <span class="at">━━▶ @指定</span>
         <span class="invite">╌╌▶ 跟日</span>
         <span class="random">──▶ 随机</span>
+        <span class="anime">━━▶ 老婆群友</span>
     </div>
     <div id="network-container"></div>
 
@@ -86,6 +88,8 @@
                 edgeColor = "#C85A7C"; edgeDashes = false; edgeWidth = 4; edgeLabel = "日了";
             } else if (type === "invite") {
                 edgeColor = "#D4A5E0"; edgeDashes = [8, 6]; edgeWidth = 3; edgeLabel = "跟日";
+            } else if (type === "anime_link") {
+                edgeColor = "#4E8C8A"; edgeDashes = false; edgeWidth = 4; edgeLabel = r.role || "老婆群友";
             } else {
                 edgeColor = "#FFB7C5"; edgeDashes = false; edgeWidth = 2; edgeLabel = "随机日";
             }
