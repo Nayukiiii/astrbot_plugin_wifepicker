@@ -151,7 +151,6 @@ class RandomWifePlugin(Star):
             "affinity_ranking": self._cmd_affinity_ranking,
             "love_ranking": self._cmd_love_ranking,
             "today_status": self._cmd_today_status,
-            "anime_group_friend": self._cmd_anime_group_friend,
         }
         self._keyword_action_to_command_handler = {
             "draw_wife": "draw_wife",
@@ -170,10 +169,306 @@ class RandomWifePlugin(Star):
             "affinity_ranking": "好感度排行",
             "love_ranking": "恩爱排行",
             "today_status": "今日玩法",
-            "anime_group_friend": "老婆群友",
         }
         self._keyword_trigger_block_prefixes = ("/", "!", "！")
+        global _PLUGIN_INSTANCE
+        _PLUGIN_INSTANCE = self
         logger.info(f"抽老婆插件已加载。数据目录: {self.data_dir}")
+
+    # ============================================================
+    # 跨插件联动 API（供 animewifex 等读取）
+    # ============================================================
+
+    def get_lover(self, group_id: str, user_id: str) -> str | None:
+        """读取 user_id 今日恋爱绑定对象。无副作用。"""
+        try:
+            return self._get_pure_love_partner(str(group_id), str(user_id))
+        except Exception:
+            return None
+
+    async def silent_draw_group_friend(self, event, *, group_id: str, user_id: str,
+                                        nick: str, anime_wife_img: str | None = None) -> dict | None:
+        """供 animewifex 反向调用：在 wifepicker 里抽今日老婆（群友），
+        同时跑同担判定并缓存。返回 dict 或 None。
+
+        返回字段：
+          wife_id, wife_name, avatar_url, remaining,
+          already_drawn (bool), tongdan (dict | None),
+          partner_id (str | None: 恋爱绑定中则直接返回伴侣),
+          all_tongdan: list[dict] 全群本命同担群友列表
+        """
+        try:
+            group_id = str(group_id)
+            user_id = str(user_id)
+            logger.info(f"[联动] silent_draw_group_friend enter gid={group_id} uid={user_id}")
+            if not is_allowed_group(group_id, self.config):
+                logger.info(f"[联动] bail: 群 {group_id} 不在 wifepicker 白名单")
+                return None
+
+            # 恋爱绑定：直接返回伴侣信息，不抽
+            partner_id = self._get_pure_love_partner(group_id, user_id)
+            if partner_id:
+                partner_name = f"用户({partner_id})"
+                try:
+                    if event.get_platform_name() == "aiocqhttp":
+                        _members = await event.bot.api.call_action(
+                            "get_group_member_list", group_id=int(group_id))
+                        if isinstance(_members, dict) and "data" in _members:
+                            _members = _members["data"]
+                        partner_name = resolve_member_name(_members, user_id=partner_id, fallback=partner_name)
+                except Exception:
+                    pass
+                return {
+                    "partner_id": partner_id,
+                    "partner_name": partner_name,
+                    "avatar_url": f"https://q4.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec=640",
+                }
+
+            # 已达每日上限：返回已抽信息
+            daily_limit = self.config.get("daily_limit", 3)
+            group_records = self._get_group_records(group_id)
+            user_recs = [r for r in group_records if r["user_id"] == user_id]
+            logger.info(f"[联动] user_recs={len(user_recs)} daily_limit={daily_limit}")
+            if len(user_recs) >= daily_limit:
+                last = user_recs[-1]
+                wife_id = str(last.get("wife_id", ""))
+                if wife_id:
+                    tongdan = self._refresh_tongdan_for_pair(
+                        group_id, user_id, wife_id, anime_wife_img
+                    )
+                    # 已抽满路径也做一次扫全群同担
+                    members_al: list = []
+                    try:
+                        if event.get_platform_name() == "aiocqhttp":
+                            members_al = await event.bot.api.call_action(
+                                "get_group_member_list", group_id=int(group_id))
+                            if isinstance(members_al, dict) and "data" in members_al:
+                                members_al = members_al["data"]
+                    except Exception:
+                        pass
+                    scan_candidates = list(self.active_users.get(group_id, {}).keys())
+                    if members_al:
+                        cm = {str(m.get("user_id")) for m in members_al}
+                        scan_candidates = [u for u in scan_candidates if u in cm]
+                    all_td = self._scan_all_tongdan(
+                        group_id, user_id, anime_wife_img, scan_candidates, members_al
+                    )
+                    return {
+                        "wife_id": wife_id,
+                        "wife_name": last.get("wife_name", f"用户({wife_id})"),
+                        "avatar_url": f"https://q4.qlogo.cn/headimg_dl?dst_uin={wife_id}&spec=640",
+                        "remaining": 0,
+                        "already_drawn": True,
+                        "tongdan": tongdan,
+                        "all_tongdan": all_td,
+                    }
+                return None
+
+            self._track_usage(event, "draw_wife")
+            self._cleanup_inactive(group_id)
+            bot_id = str(event.get_self_id())
+
+            members: list = []
+            current_member_ids: list[str] = []
+            try:
+                if event.get_platform_name() == "aiocqhttp":
+                    members = await event.bot.api.call_action(
+                        "get_group_member_list", group_id=int(group_id))
+                    if isinstance(members, dict) and "data" in members:
+                        members = members["data"]
+                    current_member_ids = [str(m.get("user_id")) for m in members]
+            except Exception:
+                pass
+
+            active_pool = self.active_users.get(group_id, {})
+            excluded = self._draw_excluded_users()
+            excluded.update([bot_id, user_id, "0"])
+            excluded.update(self._get_all_pure_love_users(group_id))
+            if current_member_ids:
+                pool = [uid for uid in active_pool.keys()
+                        if uid not in excluded and uid in current_member_ids]
+            else:
+                pool = [uid for uid in active_pool.keys() if uid not in excluded]
+            logger.info(f"[联动] active_pool={len(active_pool)} excluded={len(excluded)} "
+                        f"current_members={len(current_member_ids)} pool={len(pool)}")
+            if not pool:
+                logger.info("[联动] bail: 活跃池/群成员过滤后为空")
+                return None
+
+            wife_id = random.choice(pool)
+            wife_name = f"用户({wife_id})"
+            try:
+                wife_name = resolve_member_name(members, user_id=wife_id, fallback=wife_name)
+            except Exception:
+                pass
+
+            timestamp = datetime.now().isoformat()
+            group_records.append({
+                "user_id": user_id, "wife_id": wife_id,
+                "wife_name": wife_name, "timestamp": timestamp,
+            })
+            maybe_add_other_half_record(
+                records=group_records, user_id=user_id, user_name=nick,
+                wife_id=wife_id, wife_name=wife_name,
+                enabled=self._auto_set_other_half_enabled(), timestamp=timestamp,
+            )
+            save_json(self.records_file, self.records, self.records_file, self.config)
+
+            tongdan = self._refresh_tongdan_for_pair(
+                group_id, user_id, wife_id, anime_wife_img
+            )
+            # 扫全群同担：对所有活跃成员（含未被抽中的人）做一次本命匹配
+            scan_candidates = list(active_pool.keys())
+            if current_member_ids:
+                scan_candidates = [u for u in scan_candidates if u in current_member_ids]
+            all_td = self._scan_all_tongdan(
+                group_id, user_id, anime_wife_img, scan_candidates, members
+            )
+            return {
+                "wife_id": wife_id,
+                "wife_name": wife_name,
+                "avatar_url": f"https://q4.qlogo.cn/headimg_dl?dst_uin={wife_id}&spec=640",
+                "remaining": max(0, daily_limit - len(user_recs) - 1),
+                "already_drawn": False,
+                "tongdan": tongdan,
+                "all_tongdan": all_td,
+            }
+        except Exception as e:
+            logger.warning(f"[联动] silent_draw_group_friend 失败: {e}")
+            return None
+
+    def _refresh_tongdan_for_pair(self, group_id: str, user_id: str,
+                                   friend_id: str, user_anime_img: str | None) -> dict | None:
+        """对 (user_id, friend_id) 计算并缓存当天同担判定。"""
+        inst = self._animewifex_instance()
+        if inst is None:
+            return None
+        friend_anime_img = None
+        try:
+            f_wife = inst.get_today_wife_simple(group_id, friend_id)
+            friend_anime_img = f_wife["img"] if f_wife else None
+        except Exception:
+            pass
+        td = self._detect_tongdan(
+            group_id, user_id, friend_id,
+            user_wife_img=user_anime_img, friend_wife_img=friend_anime_img,
+        )
+        if td:
+            self._save_tongdan_cache(group_id, user_id, friend_id, td)
+        return td
+
+    def _scan_all_tongdan(self, group_id: str, user_id: str, user_anime_img: str | None,
+                          candidates: list[str], members: list) -> list[dict]:
+        """扫描候选群友里所有跟当前用户本命有重叠 / 老婆互为本命 的人。
+        命中时缓存配对 buff，便于强娶时生效。
+        返回 [{uid, name, shared, reason, mult}]，按 shared 数量降序。
+        """
+        inst = self._animewifex_instance()
+        if inst is None:
+            return []
+        try:
+            my_ben = set(inst.get_benming_chars(group_id, user_id))
+        except Exception:
+            return []
+        if not my_ben and not user_anime_img:
+            return []
+        out = []
+        for fid in candidates:
+            fid = str(fid)
+            if fid == user_id:
+                continue
+            try:
+                f_ben = set(inst.get_benming_chars(group_id, fid))
+            except Exception:
+                f_ben = set()
+            f_wife_img = None
+            try:
+                f_wife = inst.get_today_wife_simple(group_id, fid)
+                f_wife_img = f_wife["img"] if f_wife else None
+            except Exception:
+                pass
+            td = self._detect_tongdan(
+                group_id, user_id, fid,
+                user_wife_img=user_anime_img, friend_wife_img=f_wife_img,
+            )
+            if not td:
+                continue
+            self._save_tongdan_cache(group_id, user_id, fid, td)
+            name = f"用户({fid})"
+            try:
+                name = resolve_member_name(members, user_id=fid, fallback=name)
+            except Exception:
+                pass
+            out.append({
+                "uid": fid, "name": name,
+                "shared": td["shared"], "reason": td["reason"], "mult": td["mult"],
+            })
+        out.sort(key=lambda x: len(x["shared"]), reverse=True)
+        return out
+
+    def add_force_marry_cooldown_minutes(self, group_id: str, user_id: str, minutes: int = 30) -> bool:
+        """供 animewifex 反向调：给 user_id 加强娶冷却（NTR 传染）。
+        - cd_mode=cooldown: 把 forced_records 时间戳推到 (now - cooldown) + minutes
+        - cd_mode=daily: 直接给 force_daily 计数 +1（相当于扣一次次数）
+        失败/无影响时返回 False。
+        """
+        try:
+            group_id, user_id = str(group_id), str(user_id)
+            cd_mode = self.config.get("force_marry_cd_mode", "daily")
+            if cd_mode == "daily":
+                self._increment_force_daily(group_id, user_id)
+                return True
+            # cooldown 模式：把 last_force_time 推到 "now - (cooldown_total - minutes_to_wait)"
+            cd_total = int(self.config.get("force_marry_cooldown", 3600))
+            wait = max(60, minutes * 60)
+            target_last = time.time() - max(0, cd_total - wait)
+            self.forced_records.setdefault(group_id, {})[user_id] = target_last
+            save_json(self.forced_file, self.forced_records)
+            return True
+        except Exception as e:
+            logger.warning(f"[联动] add_force_marry_cooldown_minutes 失败: {e}")
+            return False
+
+    def grant_force_marry_bonus(self, group_id: str, user_id: str, n: int = 1) -> bool:
+        """供 animewifex 反向调：给 user_id 加 n 次额外强娶次数。
+        daily 模式 → force_daily 计数 -n（相当于退还 n 次）
+        cooldown 模式 → 直接把上次冷却抹掉
+        """
+        try:
+            group_id, user_id = str(group_id), str(user_id)
+            cd_mode = self.config.get("force_marry_cd_mode", "daily")
+            if cd_mode == "daily":
+                today = datetime.now().strftime("%Y-%m-%d")
+                grp = self.force_daily.setdefault(group_id, {})
+                rec = grp.get(user_id, {"date": today, "count": 0})
+                if rec.get("date") != today:
+                    rec = {"date": today, "count": 0}
+                rec["count"] = max(0, int(rec.get("count", 0)) - int(n))
+                grp[user_id] = rec
+                save_json(self.force_daily_file, self.force_daily)
+            else:
+                self.forced_records.setdefault(group_id, {}).pop(user_id, None)
+                save_json(self.forced_file, self.forced_records)
+            return True
+        except Exception as e:
+            logger.warning(f"[联动] grant_force_marry_bonus 失败: {e}")
+            return False
+
+    def is_cp_protected(self, group_id: str, a: str, b: str) -> bool:
+        """CP 双向保护：好感度达到该对随机锁定的阈值即生效。"""
+        try:
+            a, b = str(a), str(b)
+            # 恋爱绑定一定保护
+            partner = self.get_lover(group_id, a)
+            if partner == b:
+                return True
+            # 随机阈值保护
+            rec = self._get_affinity_record(str(group_id), a, b)
+            value = float(rec.get("value", 0))
+            threshold = float(rec.get("cp_protect_threshold", 0))
+            return threshold > 0 and value >= threshold
+        except Exception:
+            return False
 
     # ============================================================
     # 恋爱系统 helpers
@@ -233,6 +528,7 @@ class RandomWifePlugin(Star):
             "value": 0, "last_force_date": "", "first_100": False,
             "first_100_date": "", "last_decay_date": "", "last_reset_month": "",
             "last_gain": 0, "last_gain_date": "",
+            "cp_protect_threshold": 0,
         }
         return self.affinity.get(group_id, {}).get(key, dict(default))
 
@@ -281,11 +577,66 @@ class RandomWifePlugin(Star):
         self._process_affinity_decay(group_id, a, b)
         return self._get_affinity_record(group_id, a, b).get("value", 0)
 
-    def _increase_affinity(self, group_id: str, a: str, b: str) -> tuple[float, bool]:
-        value, first_time, _ = self._increase_affinity_by(
-            group_id, a, b, random.randint(1, 10), source="force_marry"
+    def _increase_affinity(self, group_id: str, a: str, b: str) -> tuple[float, bool, dict]:
+        """返回 (value, first_100, meta)
+        meta: {fated: bool, fated_char: str|None, tongdan_mult: float|None, gain: int}
+        """
+        meta: dict = {"fated": False, "fated_char": None, "tongdan_mult": None, "gain": 0}
+        base_gain = random.randint(1, 10)
+
+        # 命中注定：A 的本命角色 == B 当天的二次元老婆（互相检查双向）
+        fated, fated_char = self._check_fated_match(group_id, a, b)
+        if fated:
+            gain = 30
+            source = "force_marry_fated"
+            meta["fated"] = True
+            meta["fated_char"] = fated_char
+        else:
+            # 本命同担命中：好感度增益按当天缓存的随机倍率放大
+            tongdan = self._get_tongdan_cache(group_id, a, b) or self._get_tongdan_cache(group_id, b, a)
+            if tongdan and tongdan.get("shared"):
+                mult = float(tongdan.get("mult", 1.0))
+                gain = int(round(base_gain * mult))
+                meta["tongdan_mult"] = mult
+                source = "force_marry_tongdan"
+            else:
+                gain = base_gain
+                source = "force_marry"
+        meta["gain"] = gain
+        value, first_time, actual = self._increase_affinity_by(
+            group_id, a, b, gain, source=source
         )
-        return value, first_time
+        meta["actual_gain"] = actual
+        return value, first_time, meta
+
+    def _check_fated_match(self, group_id: str, a: str, b: str) -> tuple[bool, str | None]:
+        """命中注定：a 的本命 ∩ {b 今日二次元老婆} 不空 → 触发。双向。"""
+        inst = self._animewifex_instance()
+        if inst is None:
+            return False, None
+        try:
+            a_ben = set(inst.get_benming_chars(group_id, a))
+            b_ben = set(inst.get_benming_chars(group_id, b))
+            a_wife = inst.get_today_wife_simple(group_id, a)
+            b_wife = inst.get_today_wife_simple(group_id, b)
+            a_wife_img = a_wife["img"] if a_wife else None
+            b_wife_img = b_wife["img"] if b_wife else None
+            if b_wife_img and b_wife_img in a_ben:
+                return True, b_wife_img
+            if a_wife_img and a_wife_img in b_ben:
+                return True, a_wife_img
+        except Exception:
+            return False, None
+        return False, None
+
+    def _animewifex_is_karma_locked(self, group_id: str, uid: str) -> bool:
+        inst = self._animewifex_instance()
+        if inst is None:
+            return False
+        try:
+            return bool(inst.is_karma_locked(str(group_id), str(uid)))
+        except Exception:
+            return False
 
     def _increase_affinity_by(
         self, group_id: str, a: str, b: str, gain: int, *, source: str = ""
@@ -294,12 +645,16 @@ class RandomWifePlugin(Star):
         if group_id not in self.affinity:
             self.affinity[group_id] = {}
         if key not in self.affinity[group_id]:
+            # CP 双向保护阈值：每对首次互动时锁定一个 50~100 的随机值
             self.affinity[group_id][key] = {
                 "value": 0, "last_force_date": "", "first_100": False,
                 "first_100_date": "", "last_decay_date": "", "last_reset_month": "",
                 "last_gain": 0, "last_gain_date": "",
+                "cp_protect_threshold": random.randint(50, 100),
             }
         rec = self.affinity[group_id][key]
+        if "cp_protect_threshold" not in rec:
+            rec["cp_protect_threshold"] = random.randint(50, 100)
         today = datetime.now().strftime("%Y-%m-%d")
         cm = datetime.now().strftime("%Y-%m")
         if rec.get("last_reset_month", "") != cm:
@@ -489,168 +844,93 @@ class RandomWifePlugin(Star):
             "pool_empty": "让群里再有几个人随便说句话，活跃池热起来后就能开抽。",
             "force": "继续线索：发「好感度 @TA」看进度；好感度满 100 会进恩爱榜。",
             "ri": "群友可以接着发「我也日 @TA」，或者看「日群友关系图」。",
-            "status": "今日入口：抽老婆 / 老婆群友 / 强娶 @某人 / 好感度排行 / 关系图。",
+            "status": "今日入口：抽老婆 / 强娶 @某人 / 好感度排行 / 关系图。",
         }
         return hints.get(kind, hints["draw"])
 
     def _today_key(self) -> str:
         return datetime.now().strftime("%Y-%m-%d")
 
-    def _animewifex_config_dir(self) -> str:
-        for path in self._animewifex_config_dirs():
-            if os.path.isdir(path):
-                return path
-        return self._animewifex_config_dirs()[0]
+    # ============================================================
+    # 跨插件联动：animewifex 实例 / 本命同担缓存
+    # ============================================================
 
-    def _animewifex_config_dirs(self) -> list[str]:
-        custom_dir = str(self.config.get("animewifex_config_dir", "") or "").strip()
-        candidates: list[str] = []
-        if custom_dir:
-            candidates.append(custom_dir)
+    def _animewifex_instance(self):
+        """获取 animewifex 插件实例。未加载时返回 None。
+        AstrBot 加载的插件不一定能通过顶层 import 找到，遍历 sys.modules。"""
         try:
-            candidates.append(os.path.join(StarTools.get_data_dir("astrbot_plugin_animewifex"), "config"))
+            import sys
+            mod = None
+            for name, m in list(sys.modules.items()):
+                if m is None:
+                    continue
+                if name.endswith("astrbot_plugin_animewifex.main") or name == "astrbot_plugin_animewifex":
+                    mod = m
+                    break
+            if mod is None:
+                return None
+            get_instance = getattr(mod, "get_instance", None)
+            if get_instance is None:
+                return None
+            return get_instance()
         except Exception:
-            pass
-        plugin_data_root = get_astrbot_plugin_data_path()
-        candidates.extend([
-            os.path.join(plugin_data_root, "astrbot_plugin_animewifex", "config"),
-            os.path.join(os.path.dirname(plugin_data_root), "plugin_data", "astrbot_plugin_animewifex", "config"),
-            os.path.join(os.getcwd(), "data", "plugin_data", "astrbot_plugin_animewifex", "config"),
-            os.path.join(os.getcwd(), "data", "astrbot_plugin_animewifex", "config"),
-        ])
-        seen = set()
-        unique = []
-        for path in candidates:
-            norm = os.path.normpath(path)
-            if norm in seen:
-                continue
-            seen.add(norm)
-            unique.append(norm)
-        return unique
+            return None
 
-    def _anime_wife_display_name(self, img: str) -> str:
-        name = os.path.splitext(str(img or ""))[0].split("/")[-1]
-        if "!" in name:
-            source, chara = name.split("!", 1)
-            return f"《{source}》{chara}"
-        return name or "未知老婆"
-
-    def _get_anime_wife_today(self, group_id: str, user_id: str) -> dict | None:
+    def _ensure_today_tongdan_cache(self) -> None:
+        """同担 buff 缓存：{date, pairs: {gid: {"uid->fid": {mult, shared, anime_wife}}}}"""
         today = self._today_key()
-        wife_data = None
-        for config_dir in self._animewifex_config_dirs():
-            config_path = os.path.join(config_dir, f"{group_id}.json")
-            cfg = load_json(config_path, {})
-            wife_data = cfg.get(user_id)
-            if isinstance(wife_data, list):
-                break
-        if not isinstance(wife_data, list) or len(wife_data) < 2:
+        if self.anime_link_daily.get("date") != today or "pairs" not in self.anime_link_daily:
+            self.anime_link_daily = {"date": today, "pairs": {}}
+
+    def _tongdan_pair_key(self, a: str, b: str) -> str:
+        return f"{a}->{b}"
+
+    def _detect_tongdan(self, group_id: str, user_id: str, friend_id: str,
+                        user_wife_img: str | None, friend_wife_img: str | None) -> dict | None:
+        """判定本命同担：
+        - 双方本命列表有交集，或
+        - 一方今日二次元老婆 ∈ 另一方本命列表
+        命中则返回 {shared: [...], reason: str, mult: float}，否则 None。
+        倍率每次命中时在 1.3~2.0 之间随机。
+        """
+        inst = self._animewifex_instance()
+        if inst is None:
             return None
-        if wife_data[1] != today:
+        try:
+            ben_a = set(inst.get_benming_chars(group_id, user_id))
+            ben_b = set(inst.get_benming_chars(group_id, friend_id))
+        except Exception:
             return None
-        img = str(wife_data[0] or "")
+        shared = list(ben_a & ben_b)
+        reasons = []
+        if shared:
+            reasons.append("本命重叠")
+        cross = []
+        if friend_wife_img and friend_wife_img in ben_a:
+            cross.append(friend_wife_img)
+            reasons.append("TA 今日老婆是你的本命")
+        if user_wife_img and user_wife_img in ben_b:
+            cross.append(user_wife_img)
+            reasons.append("你今日老婆是 TA 的本命")
+        all_hits = list({*shared, *cross})
+        if not all_hits:
+            return None
         return {
-            "img": img,
-            "name": self._anime_wife_display_name(img),
-            "owner": wife_data[2] if len(wife_data) >= 3 else "",
+            "shared": all_hits,
+            "reason": " / ".join(reasons),
+            "mult": round(random.uniform(1.3, 2.0), 2),
         }
 
-    def _ensure_today_anime_link(self) -> None:
-        today = self._today_key()
-        if self.anime_link_daily.get("date") != today:
-            self.anime_link_daily = {"date": today, "groups": {}}
-
-    def _anime_link_roles(self) -> list[str]:
-        return ["同担搭子", "情敌", "陪嫁群友", "助攻", "修罗场见证人"]
-
-    def _anime_link_affinity_gain(self) -> int:
-        min_gain = int(self.config.get("animewifex_link_affinity_gain_min", 5))
-        max_gain = int(self.config.get("animewifex_link_affinity_gain_max", 15))
-        min_gain = max(0, min_gain)
-        max_gain = max(min_gain, max_gain)
-        return random.randint(min_gain, max_gain)
-
-    def _apply_anime_link_effects(
-        self,
-        *,
-        group_id: str,
-        user_id: str,
-        user_name: str,
-        friend_id: str,
-        friend_name: str,
-        anime_wife: dict,
-        link: dict,
-    ) -> dict:
-        if link.get("strong_link_applied"):
-            return {
-                "affinity_gain": int(link.get("affinity_gain", 0)),
-                "affinity_value": link.get("affinity_value", 0),
-                "first_100": bool(link.get("first_100", False)),
-                "role": link.get("role") or "同担搭子",
-            }
-
-        role = link.get("role") or random.choice(self._anime_link_roles())
-        gain = int(link.get("affinity_gain") or self._anime_link_affinity_gain())
-        affinity_value, first_100, actual_gain = self._increase_affinity_by(
-            group_id, user_id, friend_id, gain, source="animewifex_link"
-        )
-
-        if self.config.get("animewifex_link_add_ri_record", True):
-            if group_id not in self.ri_stats:
-                self.ri_stats[group_id] = {}
-            if user_id not in self.ri_stats[group_id]:
-                self.ri_stats[group_id][user_id] = []
-            self.ri_stats[group_id][user_id].append(time.time())
-            self._clean_ri_stats()
-            save_json(self.ri_stats_file, self.ri_stats)
-
-            self._increment_ri_target(group_id, friend_id)
-            group_ri_records = self._get_ri_group_records(group_id)
-            group_ri_records.append({
-                "user_id": user_id,
-                "user_name": user_name,
-                "target_id": friend_id,
-                "target_name": friend_name,
-                "timestamp": datetime.now().isoformat(),
-                "type": "anime_link",
-                "anime_wife": anime_wife.get("name", ""),
-                "role": role,
-            })
-            save_json(self.ri_records_file, self.ri_records)
-
-        link.update({
-            "role": role,
-            "affinity_gain": actual_gain,
-            "affinity_value": affinity_value,
-            "first_100": first_100,
-            "strong_link_applied": True,
-        })
+    def _save_tongdan_cache(self, group_id: str, user_id: str, friend_id: str, info: dict) -> None:
+        self._ensure_today_tongdan_cache()
+        pairs = self.anime_link_daily["pairs"].setdefault(group_id, {})
+        pairs[self._tongdan_pair_key(user_id, friend_id)] = info
         save_json(self.anime_link_file, self.anime_link_daily)
-        return {
-            "affinity_gain": actual_gain,
-            "affinity_value": affinity_value,
-            "first_100": first_100,
-            "role": role,
-        }
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def anime_group_friend_plain_trigger(self, event: AstrMessageEvent):
-        message_str = (event.message_str or "").strip()
-        if not message_str or event.is_at_or_wake_command:
-            return
-        if message_str.startswith(self._keyword_trigger_block_prefixes):
-            return
-        route = self._keyword_router.match_command_route(message_str)
-        if route is None or route.action != "anime_group_friend":
-            return
-        if getattr(event, "_wifepicker_anime_group_friend_handled", False):
-            return
-        setattr(event, "_wifepicker_anime_group_friend_handled", True)
-
-        self._record_active(event)
-        async for result in self._cmd_anime_group_friend(event):
-            yield result
-        event.stop_event()
+    def _get_tongdan_cache(self, group_id: str, user_id: str, friend_id: str) -> dict | None:
+        self._ensure_today_tongdan_cache()
+        pairs = self.anime_link_daily.get("pairs", {}).get(group_id, {})
+        return pairs.get(self._tongdan_pair_key(user_id, friend_id))
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def keyword_trigger(self, event: AstrMessageEvent):
@@ -675,17 +955,10 @@ class RandomWifePlugin(Star):
         if route is None:
             route = self._keyword_router.match_command_route(message_str)
         if route:
-            if (
-                route.action == "anime_group_friend"
-                and getattr(event, "_wifepicker_anime_group_friend_handled", False)
-            ):
-                return
             if route.permission != PermissionLevel.MEMBER:
                 yield event.plain_result("管理员命令请使用带前缀的正式指令触发。")
                 event.stop_event()
                 return
-            if route.action == "anime_group_friend":
-                setattr(event, "_wifepicker_anime_group_friend_handled", True)
             # 记录活跃（既然说话了就要进池子）
             self._record_active(event)
             # 找到对应的函数，比如 _cmd_draw_wife
@@ -912,10 +1185,7 @@ class RandomWifePlugin(Star):
                 event,
                 message=[
                     {"type": "at", "data": {"qq": user_id}},
-                    {
-                        "type": "text",
-                        "data": {"text": f" 你的今日老婆是：\n\n【{wife_name}】\n"},
-                    },
+                    {"type": "text", "data": {"text": f" 你的今日老婆是：\n\n【{wife_name}】\n"}},
                     {"type": "image", "data": {"file": avatar_url}},
                     {"type": "text", "data": {"text": suffix_text}},
                 ],
@@ -931,6 +1201,13 @@ class RandomWifePlugin(Star):
             Comp.Plain(suffix_text),
         ]
         yield event.chain_result(chain)
+
+    def _anime_char_display(self, img: str) -> str:
+        name = os.path.splitext(str(img or ""))[0].split("/")[-1]
+        if "!" in name:
+            src, chara = name.split("!", 1)
+            return f"《{src}》{chara}"
+        return name or "?"
 
     @filter.command("我的老婆", alias={"抽取历史"})
     async def show_history(self, event: AstrMessageEvent):
@@ -1054,6 +1331,11 @@ class RandomWifePlugin(Star):
             yield event.plain_result("该用户在强娶排除列表中，无法被强娶。")
             return
 
+        # 业力镜像保护：animewifex 业力锁的对象当天免被强娶
+        if self._animewifex_is_karma_locked(group_id, target_id):
+            yield event.plain_result("TA 今天背着二次元业力惩罚，正在面壁，强娶失败~")
+            return
+
         # ★ 检查4：B 是否在恋爱中？
         target_partner = self._get_pure_love_partner(group_id, target_id)
         if target_partner:
@@ -1114,7 +1396,7 @@ class RandomWifePlugin(Star):
                 self.forced_records.setdefault(group_id, {})[user_id] = now
                 save_json(self.forced_file, self.forced_records)
             # 好感度增加
-            new_aff, _ = self._increase_affinity(group_id, user_id, target_id)
+            new_aff, _, _meta = self._increase_affinity(group_id, user_id, target_id)
             # 发送恋爱邀请
             yield event.plain_result(
                 f"对方已被你锁住💕 好感度：{new_aff}%\n"
@@ -1178,7 +1460,7 @@ class RandomWifePlugin(Star):
         just_locked = (t_lock["count"] >= lock_threshold and not is_locked)
 
         if just_locked:
-            new_aff, _ = self._increase_affinity(group_id, user_id, target_id)
+            new_aff, _, _meta = self._increase_affinity(group_id, user_id, target_id)
             avatar_url_jl = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
             text_jl = (
                 f" 💕 你强娶【{target_name}】触发了恋爱邀请！\n"
@@ -1206,13 +1488,40 @@ class RandomWifePlugin(Star):
             return
 
         # ★ 好感度增加（非 just_locked 时）
-        new_aff, first_100 = self._increase_affinity(group_id, user_id, target_id)
+        new_aff, first_100, meta = self._increase_affinity(group_id, user_id, target_id)
         aff_msg = f"\n💗 与 {target_name} 的好感度：{new_aff}%"
+        if meta.get("fated"):
+            # 命中注定：本命撞 TA 今日二次元老婆 → 大额奖励 + 群广播 + 称号
+            fated_char_disp = self._anime_char_display(meta.get("fated_char") or "")
+            aff_msg += (
+                f"\n🌟 命中注定！你/TA 的本命就是对方今日的二次元老婆【{fated_char_disp}】"
+                f"\n   好感度直接 +{meta.get('actual_gain', 30)}！"
+            )
+            # 给双方各发一个称号到 animewifex
+            inst_aw = self._animewifex_instance()
+            if inst_aw is not None:
+                try:
+                    title = f"命中注定·{datetime.now().strftime('%Y%m%d')}"
+                    inst_aw.grant_title(group_id, user_id, title)
+                    inst_aw.grant_title(group_id, target_id, title)
+                except Exception:
+                    pass
+        elif meta.get("tongdan_mult"):
+            aff_msg += f"\n✨ 本命同担 ×{meta['tongdan_mult']} 加成已生效"
 
         # ★ 恩爱特效文字
         love_msg = ""
         if first_100:
             love_msg = "\n🌸✨ 好感度满100！恩爱认证！✨🌸"
+            # 资源互喂：100% 好感度 → 双方各送 1 张 animewifex 补签券
+            inst_aw = self._animewifex_instance()
+            if inst_aw is not None:
+                try:
+                    n_a = inst_aw.grant_streak_freeze(group_id, user_id, 1)
+                    n_b = inst_aw.grant_streak_freeze(group_id, target_id, 1)
+                    love_msg += f"\n🎁 双方各获 animewifex 补签券 ×1（你 {n_a} / TA {n_b}）"
+                except Exception:
+                    pass
 
         avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={target_id}&spec=640"
         text = f" 你今天强娶了【{target_name}】哦❤️~\n请对她好一点哦~{aff_msg}{love_msg}\n"
@@ -1515,6 +1824,116 @@ class RandomWifePlugin(Star):
             lines.append("本月还没有好感度记录~")
 
         yield event.plain_result("\n".join(lines))
+
+    # ============================================================
+    # /查同担
+    # ============================================================
+
+    @filter.command("查同担", alias={"本命同担", "同担列表"})
+    async def check_tongdan_cmd(self, event: AstrMessageEvent):
+        async for r in self._cmd_check_tongdan(event):
+            yield r
+
+    async def _cmd_check_tongdan(self, event: AstrMessageEvent):
+        if event.is_private_chat():
+            yield event.plain_result("此功能仅在群聊中可用哦~")
+            return
+        group_id = str(event.get_group_id())
+        if not is_allowed_group(group_id, self.config):
+            return
+        user_id = str(event.get_sender_id())
+        self._track_usage(event, "check_tongdan")
+
+        inst = self._animewifex_instance()
+        if inst is None:
+            yield event.plain_result("没装/没启用 animewifex，本命同担功能不可用。")
+            return
+        my_ben = list(inst.get_benming_chars(group_id, user_id))
+        my_wife = inst.get_today_wife_simple(group_id, user_id)
+        my_wife_img = my_wife["img"] if my_wife else None
+        if not my_ben:
+            yield event.plain_result(
+                "你还没设置本命，先在 animewifex 发「设置本命」选 3 个本命再来~"
+            )
+            return
+
+        # 指定 @ 单独查
+        target_id = ""
+        for comp in event.get_messages():
+            if hasattr(comp, "qq") and getattr(comp, "qq", None):
+                tid = str(comp.qq)
+                if tid != user_id and tid != "0":
+                    target_id = tid
+                    break
+
+        members = []
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                members = await event.bot.api.call_action(
+                    "get_group_member_list", group_id=int(group_id))
+                if isinstance(members, dict) and "data" in members:
+                    members = members["data"]
+        except Exception:
+            pass
+
+        def _disp(img: str) -> str:
+            name = os.path.splitext(str(img or ""))[0].split("/")[-1]
+            if "!" in name:
+                src, ch = name.split("!", 1)
+                return f"《{src}》{ch}"
+            return name or "?"
+
+        if target_id:
+            t_ben = list(inst.get_benming_chars(group_id, target_id))
+            t_wife = inst.get_today_wife_simple(group_id, target_id)
+            t_wife_img = t_wife["img"] if t_wife else None
+            td = self._detect_tongdan(
+                group_id, user_id, target_id,
+                user_wife_img=my_wife_img, friend_wife_img=t_wife_img,
+            )
+            t_name = f"用户({target_id})"
+            try:
+                t_name = resolve_member_name(members, user_id=target_id, fallback=t_name)
+            except Exception:
+                pass
+            if not td:
+                yield event.plain_result(
+                    f"你和【{t_name}】没本命同担：\n"
+                    f"  你的本命：{', '.join(_disp(b) for b in my_ben) or '（空）'}\n"
+                    f"  TA 的本命：{', '.join(_disp(b) for b in t_ben) or '（空）'}"
+                )
+                return
+            self._save_tongdan_cache(group_id, user_id, target_id, td)
+            shared_txt = "、".join(_disp(s) for s in td["shared"])
+            yield event.plain_result(
+                f"✨ 你和【{t_name}】本命同担命中（{td['reason']}）\n"
+                f"共担：{shared_txt}\n"
+                f"今天强娶 TA 时好感度 ×{td['mult']} 加成已锁定。"
+            )
+            return
+
+        # 默认：扫全群活跃池
+        active = list(self.active_users.get(group_id, {}).keys())
+        if members:
+            cm = {str(m.get("user_id")) for m in members}
+            active = [u for u in active if u in cm]
+        all_td = self._scan_all_tongdan(group_id, user_id, my_wife_img, active, members)
+        if not all_td:
+            yield event.plain_result(
+                "本群活跃池里暂时没人跟你本命同担。\n"
+                f"你的本命：{', '.join(_disp(b) for b in my_ben)}\n"
+                "让群友也设个本命试试，发「设置本命」即可~"
+            )
+            return
+        lines = [f"🎴 本群与你本命同担的群友（共 {len(all_td)} 位）"]
+        for x in all_td[:15]:
+            shared_disp = "、".join(_disp(s) for s in (x.get("shared") or [])[:3])
+            lines.append(f"  · {x['name']}：{shared_disp} ×{x['mult']}")
+        if len(all_td) > 15:
+            lines.append(f"  …还有 {len(all_td) - 15} 位（仅显示前 15）")
+        lines.append("\n强娶任意一位都触发同担 buff。")
+        yield event.plain_result("\n".join(lines))
+
     # ============================================================
     # /好感度排行
     # ============================================================
@@ -1821,6 +2240,44 @@ class RandomWifePlugin(Star):
         clip_width = 1920
         clip_height = 1080 + (max(0, node_count - 10) * 60)
 
+        # 关系图叠层：从 animewifex 读取每位群友今日二次元老婆图 + 本命同担配对
+        anime_wifes: dict = {}
+        tongdan_pairs: list = []
+        inst_aw = self._animewifex_instance()
+        if inst_aw is not None:
+            try:
+                for uid in unique_nodes:
+                    info = inst_aw.get_today_wife_simple(group_id, uid)
+                    if not info:
+                        continue
+                    url = inst_aw.wife_image_url(info["img"])
+                    if not url:
+                        continue
+                    anime_wifes[uid] = {"url": url, "name": info["name"]}
+            except Exception as e:
+                logger.warning(f"[关系图] 拉取二次元老婆失败: {e}")
+            try:
+                self._ensure_today_tongdan_cache()
+                grp_pairs = self.anime_link_daily.get("pairs", {}).get(group_id, {})
+                seen = set()
+                for key, info in grp_pairs.items():
+                    if not isinstance(info, dict) or not info.get("shared"):
+                        continue
+                    if "->" not in key:
+                        continue
+                    a, b = key.split("->", 1)
+                    pair_k = tuple(sorted([a, b]))
+                    if pair_k in seen:
+                        continue
+                    seen.add(pair_k)
+                    tongdan_pairs.append({
+                        "a": a, "b": b,
+                        "mult": info.get("mult", 1.0),
+                        "shared": len(info.get("shared") or []),
+                    })
+            except Exception as e:
+                logger.warning(f"[关系图] 拉取同担对失败: {e}")
+
         try:
             url = await self.html_render(
                 graph_html,
@@ -1831,6 +2288,8 @@ class RandomWifePlugin(Star):
                     "user_map": user_map,
                     "records": group_data,
                     "iterations": iter_count,
+                    "anime_wifes": anime_wifes,
+                    "tongdan_pairs": tongdan_pairs,
                 },
                 options={
                     "type": "png",
@@ -2107,11 +2566,10 @@ class RandomWifePlugin(Star):
         help_text = (
             "===== 🌸 今日怎么玩 =====\n"
             "先发【抽老婆】开局，再用【强娶 @某人】推进好感度。\n"
-            "如果装了 animewifex，先抽二次元老婆，再发【老婆群友】触发强联动。\n"
+            "装了 animewifex 时，抽老婆会顺手抽今日二次元老婆，本命同担命中强娶有 buff。\n"
             "想看局势：发【今日玩法】或【关系图】。\n"
             "\n===== 核心入口 =====\n"
-            "抽老婆：随机抽取今日老婆\n"
-            "老婆群友：读取 animewifex 今日老婆，抽本群群友并同步好感度/关系图\n"
+            "抽老婆：随机抽取今日老婆（自动联动 animewifex）\n"
             "我的老婆：查看今日历史与剩余次数\n"
             "强娶 @某人：指定目标并增加好感度\n"
             "好感度 / 好感度 @某人：查看恋爱进度\n"
@@ -2140,10 +2598,11 @@ class RandomWifePlugin(Star):
 
         self._ensure_today_records()
         self._ensure_today_ri_records()
-        self._ensure_today_anime_link()
+        self._ensure_today_tongdan_cache()
         group_records = self.records.get("groups", {}).get(group_id, {}).get("records", [])
         ri_records = self.ri_records.get("groups", {}).get(group_id, {}).get("records", [])
-        anime_links = self.anime_link_daily.get("groups", {}).get(group_id, {})
+        tongdan_pairs = self.anime_link_daily.get("pairs", {}).get(group_id, {})
+        tongdan_count = sum(1 for v in tongdan_pairs.values() if isinstance(v, dict) and v.get("shared"))
         active_count = len(self.active_users.get(group_id, {}))
         drawers = {str(r.get("user_id")) for r in group_records}
         wife_targets = {str(r.get("wife_id")) for r in group_records}
@@ -2184,165 +2643,12 @@ class RandomWifePlugin(Star):
             f"今日被抽中：{len(wife_targets)} 人",
             f"强娶记录：{forced_count} 次，上锁保护：{locked_count} 人",
             f"日群友：{len(ri_records)} 次",
-            f"老婆群友联动：{len(anime_links)} 次",
+            f"本命同担命中：{tongdan_count} 对",
             f"最高好感度：{top_pair}",
             "",
             self._engagement_hint("status"),
         ]
         yield event.plain_result("\n".join(lines))
-
-    @filter.command("老婆群友", alias={"抽完老婆抽群友", "老婆搭子", "二次元老婆群友"})
-    async def anime_group_friend(self, event: AstrMessageEvent):
-        async for result in self._cmd_anime_group_friend(event):
-            yield result
-
-    async def _cmd_anime_group_friend(self, event: AstrMessageEvent):
-        if event.is_private_chat():
-            yield event.plain_result("此功能仅在群聊中可用哦~")
-            return
-
-        group_id = str(event.get_group_id())
-        if not is_allowed_group(group_id, self.config):
-            return
-        if not self.config.get("animewifex_link_enabled", True):
-            yield event.plain_result("animewifex 联动当前未开启。")
-            return
-        self._track_usage(event, "anime_group_friend")
-
-        user_id = str(event.get_sender_id())
-        bot_id = str(event.get_self_id())
-        anime_wife = self._get_anime_wife_today(group_id, user_id)
-        if not anime_wife:
-            yield event.plain_result(
-                "你今天还没有 animewifex 的二次元老婆。\n"
-                "先用 animewifex 发「抽老婆」抽二次元老婆，再发「老婆群友」抽今日群友搭子。\n"
-                f"当前读取目录：{self._animewifex_config_dir()}"
-            )
-            return
-
-        self._cleanup_inactive(group_id)
-        members = []
-        current_member_ids: list[str] = []
-        try:
-            if event.get_platform_name() == "aiocqhttp":
-                assert isinstance(event, AiocqhttpMessageEvent)
-                members = await event.bot.api.call_action(
-                    "get_group_member_list", group_id=int(group_id)
-                )
-                if isinstance(members, dict) and "data" in members:
-                    members = members["data"]
-                current_member_ids = [str(m.get("user_id")) for m in members]
-        except Exception as e:
-            logger.error(f"获取群成员列表失败，将使用活跃缓存: {e}")
-
-        user_name = event.get_sender_name() or f"用户({user_id})"
-        try:
-            user_name = resolve_member_name(members, user_id=user_id, fallback=user_name)
-        except Exception:
-            pass
-
-        self._ensure_today_anime_link()
-        group_links = self.anime_link_daily["groups"].setdefault(group_id, {})
-        existing = group_links.get(user_id)
-        if isinstance(existing, dict):
-            friend_id = str(existing.get("friend_id", ""))
-            if friend_id:
-                friend_name = existing.get("friend_name") or f"用户({friend_id})"
-                try:
-                    friend_name = resolve_member_name(members, user_id=friend_id, fallback=friend_name)
-                except Exception:
-                    pass
-                effects = self._apply_anime_link_effects(
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    friend_id=friend_id,
-                    friend_name=friend_name,
-                    anime_wife=anime_wife,
-                    link=existing,
-                )
-                avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={friend_id}&spec=640"
-                gain_text = (
-                    f"好感度 +{effects['affinity_gain']}，当前 {effects['affinity_value']}%"
-                    if effects["affinity_gain"] > 0
-                    else f"好感度当前 {effects['affinity_value']}%"
-                )
-                text = (
-                    f"今日联动已生成：\n"
-                    f"二次元老婆：【{anime_wife['name']}】\n"
-                    f"群友关系：【{friend_name}】是你的【{effects['role']}】\n"
-                    f"{gain_text}\n"
-                    "已写入「日群友关系图」和「今日玩法」。"
-                )
-                yield event.chain_result([Comp.Plain(text), Comp.Image.fromURL(avatar_url)])
-                return
-
-        active_pool = self.active_users.get(group_id, {})
-        excluded = {user_id, bot_id, "0"}
-        excluded.update(self._get_all_pure_love_users(group_id))
-        self._ensure_today_records()
-        today_records = self.records.get("groups", {}).get(group_id, {}).get("records", [])
-        excluded.update(str(r.get("wife_id", "")) for r in today_records)
-        excluded.discard("")
-        ri_target_max = int(self.config.get("ri_target_max", 3))
-        if current_member_ids:
-            pool = [
-                uid for uid in active_pool.keys()
-                if uid not in excluded and uid in current_member_ids
-                and self._get_ri_target_count(group_id, uid) < ri_target_max
-            ]
-        else:
-            pool = [
-                uid for uid in active_pool.keys()
-                if uid not in excluded and self._get_ri_target_count(group_id, uid) < ri_target_max
-            ]
-
-        if not pool:
-            yield event.plain_result(
-                "今天还抽不到群友搭子，活跃池里没有可选群友，或可选群友已被保护/用完次数。\n"
-                f"{self._engagement_hint('pool_empty')}"
-            )
-            return
-
-        friend_id = random.choice(pool)
-        friend_name = f"用户({friend_id})"
-        try:
-            friend_name = resolve_member_name(members, user_id=friend_id, fallback=friend_name)
-        except Exception:
-            pass
-
-        role = random.choice(self._anime_link_roles())
-        group_links[user_id] = {
-            "anime_wife": anime_wife["name"],
-            "anime_img": anime_wife["img"],
-            "friend_id": friend_id,
-            "friend_name": friend_name,
-            "role": role,
-            "timestamp": datetime.now().isoformat(),
-        }
-        effects = self._apply_anime_link_effects(
-            group_id=group_id,
-            user_id=user_id,
-            user_name=user_name,
-            friend_id=friend_id,
-            friend_name=friend_name,
-            anime_wife=anime_wife,
-            link=group_links[user_id],
-        )
-        save_json(self.anime_link_file, self.anime_link_daily)
-
-        avatar_url = f"https://q4.qlogo.cn/headimg_dl?dst_uin={friend_id}&spec=640"
-        first_100_text = "\n💕 好感度满 100，已经进入恩爱线！" if effects["first_100"] else ""
-        text = (
-            "今日强联动完成：\n"
-            f"二次元老婆：【{anime_wife['name']}】\n"
-            f"群友关系：【{friend_name}】成为你的【{effects['role']}】\n"
-            f"联动效果：好感度 +{effects['affinity_gain']}，当前 {effects['affinity_value']}%\n"
-            "已同步进「日群友关系图」「好感度排行」「今日玩法」。"
-            f"{first_100_text}\n"
-            "继续玩法：发「我也日 @TA」跟进，或发「关系图」看今日老婆线。"
-        )
-        yield event.chain_result([Comp.At(qq=user_id), Comp.Plain(text), Comp.Image.fromURL(avatar_url)])
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("老婆插件数据", alias={"老婆数据", "老婆留存"})
@@ -3112,3 +3418,17 @@ class RandomWifePlugin(Star):
         for task in tuple(self._withdraw_tasks):
             task.cancel()
         self._withdraw_tasks.clear()
+
+        global _PLUGIN_INSTANCE
+        _PLUGIN_INSTANCE = None
+
+
+# ==================== 模块级联动入口 ====================
+# 供 animewifex 等其他插件 try-import 调用。
+
+_PLUGIN_INSTANCE: "RandomWifePlugin | None" = None
+
+
+def get_instance() -> "RandomWifePlugin | None":
+    return _PLUGIN_INSTANCE
+

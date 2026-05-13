@@ -38,6 +38,8 @@
         const hourlyTag = new Date().toISOString().slice(0, 13);
         const raw_data = {{ records | tojson }};
         const user_map = {{ user_map | tojson }} || {};
+        const anime_wifes = {{ anime_wifes | tojson }} || {};
+        const tongdan_pairs = {{ tongdan_pairs | tojson }} || [];
         const nodes = [];
         const edges = [];
         const userSet = new Set();
@@ -71,6 +73,46 @@
                 color: { color: r.forced ? '#C85A7C' : '#FFB7C5', width: 4 },
                 font: { align: 'middle', color: '#4A3F4B', size: 48, background: '#FFF8FA' },
                 length: 700
+            });
+        });
+
+        // 二次元老婆卫星节点：挂在每位群友旁边
+        Object.entries(anime_wifes).forEach(([uid, info]) => {
+            if (!userSet.has(uid)) return;
+            const satId = '__anime_' + uid;
+            nodes.push({
+                id: satId, label: info.name || '二次元老婆',
+                shape: 'circularImage', image: info.url,
+                borderWidth: 4, size: 60,
+                color: { border: '#8A6FB0', background: '#F5F0FF' },
+                font: {
+                    color: '#5A4F6B', size: 32, vadjust: 28,
+                    strokeWidth: 4, strokeColor: '#FFFFFF'
+                }
+            });
+            edges.push({
+                from: uid, to: satId,
+                dashes: [4, 6],
+                color: { color: '#B099D6', width: 2 },
+                length: 250,
+                arrows: { to: { enabled: false } },
+                smooth: false,
+                physics: true
+            });
+        });
+
+        // 本命同担染色边
+        tongdan_pairs.forEach(p => {
+            if (!userSet.has(p.a) || !userSet.has(p.b)) return;
+            edges.push({
+                from: p.a, to: p.b,
+                label: `本命同担 ×${p.mult}`,
+                dashes: [10, 8],
+                color: { color: '#E8B547', width: 6 },
+                font: { align: 'middle', color: '#7A5A0A', size: 36, background: '#FFF8E1' },
+                arrows: { to: { enabled: false } },
+                length: 600,
+                smooth: { type: 'curvedCW', roundness: 0.3 }
             });
         });
 
